@@ -1,0 +1,35 @@
+# Generated from appsets/addons.yaml by scripts/render.sh -- do not edit.
+# track: addons  env: test
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    gitops.34fathombelow.io/source-path: addons/cert-manager/overlays/test
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/part-of: addons
+    gitops.34fathombelow.io/cluster: test-us-east
+    gitops.34fathombelow.io/env: test
+    gitops.34fathombelow.io/track: addons
+  name: cert-manager-test-us-east
+  namespace: argocd
+spec:
+  destination:
+    name: test-us-east
+    namespace: cert-manager
+  project: addons
+  revisionHistoryLimit: 5
+  source:
+    path: addons/cert-manager/overlays/test
+    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - ApplyOutOfSyncOnly=true
