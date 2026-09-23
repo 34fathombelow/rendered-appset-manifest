@@ -1,0 +1,35 @@
+# Generated from appsets/apps.yaml by scripts/render.sh -- do not edit.
+# track: apps  env: dev
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    gitops.34fathombelow.io/region: us-east-1
+    gitops.34fathombelow.io/source-path: apps/app-b/overlays/dev
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: app-b
+    app.kubernetes.io/part-of: apps
+    gitops.34fathombelow.io/cluster: dev-us-east
+    gitops.34fathombelow.io/env: dev
+    gitops.34fathombelow.io/track: apps
+  name: app-b-dev-us-east
+  namespace: argocd
+spec:
+  destination:
+    name: dev-us-east
+    namespace: app-b
+  project: apps
+  revisionHistoryLimit: 5
+  source:
+    path: apps/app-b/overlays/dev
+    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
