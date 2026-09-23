@@ -1,9 +1,8 @@
 # rendered/addons -- generated branch
 
-Do not edit or open pull requests against this branch. Every file here is
-produced by `scripts/render.sh` from `appsets/addons.yaml` on `main`
-and overwritten wholesale on each run.
+Every file here is produced by `scripts/render.sh` from `appsets/addons.yaml`
+on `main`. Do not edit it by hand: CI opens one pull request per environment
+(`render/addons/<env>`) against this branch, and merging that PR is what
+deploys the change to that environment.
 
 Layout: `<env>/<application-name>.yaml`, one ArgoCD Application per file.
-
-Rendered from main@6e7a9c40a13793d52198da723e145a425b13e74b
