@@ -8,4 +8,4 @@ cluster:
   region: us-east-1
   # Addons this cluster gets, by directory name under addons/. Use [] for none.
   addons:
-    - cert-manager
+    - kube-prometheus-stack
