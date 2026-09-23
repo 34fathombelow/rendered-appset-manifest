@@ -165,8 +165,9 @@ the project rather than disabling automated sync.
 
 `.github/workflows/ci.yaml` has two jobs.
 
-**`validate`** runs on every PR and push to `main`: `scripts/validate.sh` plus
-shellcheck, fully offline, so fork PRs never see the ArgoCD token.
+**`validate`** runs on every PR and push to `main`: `make check`
+(`scripts/validate.sh` plus shellcheck), fully offline, so fork PRs never see
+the ArgoCD token.
 
 **`render`** runs on pushes to `main` (never on PRs):
 
@@ -190,20 +191,27 @@ the workloads they point at, so a broken overlay is caught at sync, not here.
 
 ## Local use
 
-With `ARGOCD_SERVER`/`ARGOCD_AUTH_TOKEN` unset, scripts fall back to your
-`argocd login` session.
+`make` is the entry point; each target just calls a script in `scripts/`. With
+`ARGOCD_SERVER`/`ARGOCD_AUTH_TOKEN` unset, they fall back to your `argocd login`
+session.
 
 ```bash
-scripts/validate.sh                          # offline checks
-scripts/diff.sh                              # your local change vs each env's PR/branch
-scripts/diff.sh --stat prod                  # just the changed files, one env
-scripts/render.sh /tmp/r                     # render every AppSet
-scripts/render.sh /tmp/r appsets/apps.yaml   # or just some
-DRY_RUN=1 scripts/publish.sh /tmp/r          # per-env diff, pushes nothing
+make                          # list targets
+make check                    # validate + shellcheck: what CI runs before rendering
+make diff                     # your local change vs each env's PR/branch
+make diff ENV=prod STAT=1     # just the changed files, one env
+make render OUT=/tmp/r        # render every AppSet into /tmp/r
+```
+
+For anything the targets don't cover, call the scripts directly:
+
+```bash
+scripts/render.sh /tmp/r appsets/apps.yaml   # render only some AppSets
+DRY_RUN=1 scripts/publish.sh /tmp/r          # per-env file list, pushes nothing
 kubectl apply --dry-run=server -n argocd -f /tmp/r/dev/
 ```
 
-`scripts/diff.sh` renders your local state and diffs each env against its open
+`make diff` (`scripts/diff.sh`) renders your local state and diffs each env against its open
 PR branch (`render/<env>`), or against `rendered-<env>` when no PR is open: the
 diff your change would add to that env's PR.
 
@@ -267,7 +275,7 @@ otherwise read the previous commit.
        - kube-prometheus-stack
    ```
 
-3. **Check it offline:** `scripts/validate.sh`. It catches a name/directory
+3. **Check it offline:** `make check`. It catches a name/directory
    mismatch, an unknown env, a missing `addons` key, and an addon that doesn't
    exist or has no overlay for this env.
 
@@ -369,6 +377,7 @@ addons/<addon>/{base,overlays/<env>}
 argocd/projects/               AppProjects, each with an appset-generate role
 argocd/app-of-apps/<env>.yaml  one per env, adopting rendered-<env>
 bootstrap/root.yaml            apply once; syncs argocd/ from main
+Makefile                       entry points: check, validate, lint, diff, render
 scripts/validate.sh            offline checks
 scripts/render.sh              generate all AppSets, split per Application
 scripts/publish.sh             one PR per env against rendered-<env>

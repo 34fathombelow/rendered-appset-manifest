@@ -35,7 +35,9 @@ cd "$(git rev-parse --show-toplevel)"
 tmp="$(mktemp -d -t appset-diff.XXXXXX)"
 preview=""
 cleanup() {
-  [[ -n "$preview" ]] && git push -q origin --delete "$preview" 2>/dev/null || true
+  if [[ -n "$preview" ]]; then
+    git push -q origin --delete "$preview" 2>/dev/null || true
+  fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
