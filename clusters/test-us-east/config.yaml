@@ -7,4 +7,5 @@ cluster:
   env: test
   region: us-east-1
   # Addons this cluster gets, by directory name under addons/. Use [] for none.
-  addons: []
+  addons:
+    - cert-manager
