@@ -118,6 +118,7 @@ jobs:
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          ARGOCD_OPTS: --grpc-web
         run: ./scripts/render.sh "${{ matrix.appset }}" "$RUNNER_TEMP/rendered"
 
       - name: Publish to ${{ matrix.branch }}
