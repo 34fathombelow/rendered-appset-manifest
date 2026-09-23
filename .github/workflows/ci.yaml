@@ -32,8 +32,8 @@ on:
         type: choice
         options: [all, apps, addons]
 
-# Read-only by default; only the render job is granted write, and only to push
-# the generated branches.
+# Read-only by default; only the render job is granted write, to push the
+# render/<track>/<env> branches and open the per-env PRs against rendered/<track>.
 permissions:
   contents: read
 
@@ -71,6 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     strategy:
       # Never cancel the addon push because the app render failed, and vice versa.
       fail-fast: false
@@ -121,60 +122,21 @@ jobs:
           ARGOCD_OPTS: --grpc-web
         run: ./scripts/render.sh "${{ matrix.appset }}" "$RUNNER_TEMP/rendered"
 
-      - name: Publish to ${{ matrix.branch }}
+      - name: Open per-env PRs against ${{ matrix.branch }}
         if: steps.gate.outputs.run == 'true'
         env:
-          BRANCH: ${{ matrix.branch }}
-          TRACK: ${{ matrix.track }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # A worktree keeps the rendered branch entirely out of the main checkout,
-          # so nothing from main can leak onto an orphan branch by accident.
-          wt="$RUNNER_TEMP/wt"
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            git fetch origin "$BRANCH":"$BRANCH"
-            git worktree add "$wt" "$BRANCH"
-          else
-            git worktree add --detach "$wt"
-            git -C "$wt" checkout --orphan "$BRANCH"
-            git -C "$wt" rm -rqf . || true
-          fi
-
-          # Replace the whole tree: rendering is authoritative, so an Application
-          # that no longer generates must vanish from the branch.
-          find "$wt" -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
-          cp -R "$RUNNER_TEMP/rendered/." "$wt/"
-
-          cat > "$wt/README.md" <<MD
-          # rendered/$TRACK -- generated branch
-
-          Do not edit or open pull requests against this branch. Every file here is
-          produced by \`scripts/render.sh\` from \`appsets/$TRACK.yaml\` on \`main\`
-          and overwritten wholesale on each run.
-
-          Layout: \`<env>/<application-name>.yaml\`, one ArgoCD Application per file.
-
-          Rendered from main@${GITHUB_SHA}
-          MD
-
-          git -C "$wt" add -A
-          if git -C "$wt" diff --cached --quiet; then
-            echo "::notice::$BRANCH already up to date, nothing to commit"
-          else
-            git -C "$wt" commit -m "render($TRACK): from main@${GITHUB_SHA::8}"
-            git -C "$wt" push origin "$BRANCH"
-            echo "::notice::pushed $(git -C "$wt" rev-parse --short HEAD) to $BRANCH"
-          fi
-          git worktree remove --force "$wt"
+          ./scripts/publish.sh "${{ matrix.track }}" "$RUNNER_TEMP/rendered"
 
       - name: Summary
         if: steps.gate.outputs.run == 'true'
         run: |
           {
-            echo "### ${{ matrix.track }} -> \`${{ matrix.branch }}\`"
+            echo "### ${{ matrix.track }} -> PRs against \`${{ matrix.branch }}\`"
             echo
             echo "| env | applications |"
             echo "|-----|--------------|"
