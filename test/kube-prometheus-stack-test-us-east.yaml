@@ -4,25 +4,25 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    gitops.34fathombelow.io/source-path: addons/cert-manager/overlays/test
+    gitops.34fathombelow.io/source-path: addons/kube-prometheus-stack/overlays/test
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   labels:
-    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/name: kube-prometheus-stack
     app.kubernetes.io/part-of: addons
     gitops.34fathombelow.io/cluster: test-us-east
     gitops.34fathombelow.io/env: test
     gitops.34fathombelow.io/track: addons
-  name: cert-manager-test-us-east
+  name: kube-prometheus-stack-test-us-east
   namespace: argocd
 spec:
   destination:
     name: test-us-east
-    namespace: cert-manager
+    namespace: monitoring
   project: addons
   revisionHistoryLimit: 5
   source:
-    path: addons/cert-manager/overlays/test
+    path: addons/kube-prometheus-stack/overlays/test
     repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
     targetRevision: main
   syncPolicy:
