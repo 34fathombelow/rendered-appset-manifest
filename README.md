@@ -195,15 +195,23 @@ With `ARGOCD_SERVER`/`ARGOCD_AUTH_TOKEN` unset, scripts fall back to your
 
 ```bash
 scripts/validate.sh                          # offline checks
+scripts/diff.sh                              # your local change vs each env's PR/branch
+scripts/diff.sh --stat prod                  # just the changed files, one env
 scripts/render.sh /tmp/r                     # render every AppSet
 scripts/render.sh /tmp/r appsets/apps.yaml   # or just some
 DRY_RUN=1 scripts/publish.sh /tmp/r          # per-env diff, pushes nothing
 kubectl apply --dry-run=server -n argocd -f /tmp/r/dev/
 ```
 
+`scripts/diff.sh` renders your local state and diffs each env against its open
+PR branch (`render/<env>`), or against `rendered-<env>` when no PR is open: the
+diff your change would add to that env's PR.
+
 Generation is server-side: the generators read `clusters/`, `apps/` and
-`addons/` from `main` on the remote, not your working tree. Template edits in
-`appsets/` are picked up locally; changes to those directories need a push.
+`addons/` from the remote, not your working tree. So when those directories
+differ from `origin/main`, `diff.sh` pushes a snapshot of your working tree to a
+temporary `preview/<you>-<pid>` branch, renders from it, and deletes it
+afterwards; your branch and index are left alone.
 To render a specific pushed commit or branch instead of `main`, set
 `RENDER_REVISION=<sha-or-branch>`. CI always sets it to the pushed SHA, because
 ArgoCD caches what `main` resolves to and a render right after a push can
@@ -364,6 +372,7 @@ bootstrap/root.yaml            apply once; syncs argocd/ from main
 scripts/validate.sh            offline checks
 scripts/render.sh              generate all AppSets, split per Application
 scripts/publish.sh             one PR per env against rendered-<env>
+scripts/diff.sh                local render vs each env's PR/branch
 ```
 
 ## Limitations
