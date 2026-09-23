@@ -120,6 +120,8 @@ jobs:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
           ARGOCD_OPTS: --grpc-web
+          # Render the pushed commit, not whatever ArgoCD's cache says main is.
+          RENDER_REVISION: ${{ github.sha }}
         run: ./scripts/render.sh "${{ matrix.appset }}" "$RUNNER_TEMP/rendered"
 
       - name: Open per-env PRs against ${{ matrix.branch }}

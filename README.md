@@ -183,6 +183,10 @@ kubectl apply --dry-run=server -n argocd -f /tmp/r/dev/
 Generation is server-side: the generators read `clusters/`, `apps/` and
 `addons/` from `main` on the remote, not your working tree. Template edits in
 `appsets/` are picked up locally; changes to those directories need a push.
+To render a specific pushed commit or branch instead of `main`, set
+`RENDER_REVISION=<sha-or-branch>`. CI always sets it to the pushed SHA, because
+ArgoCD caches what `main` resolves to and a render right after a push can
+otherwise read the previous commit.
 
 ## Setup
 

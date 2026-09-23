@@ -15,6 +15,8 @@
 #
 #   Usage: scripts/render.sh <appset-file> <outdir>
 #   Env:   ARGOCD_SERVER, ARGOCD_AUTH_TOKEN   (optional; falls back to argocd login)
+#          RENDER_REVISION   commit the generators read instead of their `revision:`
+#                            (CI sets it to the pushed SHA; see below)
 #
 set -euo pipefail
 
@@ -75,8 +77,21 @@ raw="$(mktemp -t appset-raw.XXXXXX)"
 staging="$(mktemp -d -t appset-tree.XXXXXX)"
 trap 'rm -f "$raw"; [[ -n "${staging:-}" ]] && rm -rf "$staging"; true' EXIT
 
-echo "==> generating $APPSET"
-argocd appset generate "$APPSET" "${auth[@]}" --grpc-web -o yaml > "$raw"
+# The generators say `revision: main`, and ArgoCD resolves that through its own
+# cache, so a render started seconds after a push can read the PREVIOUS commit --
+# e.g. an AppSet that references a key the old cluster configs lack. Pinning the
+# generators to an exact SHA makes the render read the commit that triggered it.
+# Only generator revisions change; the template's targetRevision stays as written.
+src="$APPSET"
+if [[ -n "${RENDER_REVISION:-}" ]]; then
+  src="$(mktemp -t appset-src.XXXXXX)"
+  trap 'rm -f "$raw" "$src"; [[ -n "${staging:-}" ]] && rm -rf "$staging"; true' EXIT
+  yq '(.spec.generators | .. | select(tag == "!!map" and has("revision")) | .revision) = strenv(RENDER_REVISION)' \
+    "$APPSET" > "$src"
+fi
+
+echo "==> generating $APPSET${RENDER_REVISION:+ at ${RENDER_REVISION::12}}"
+argocd appset generate "$src" "${auth[@]}" --grpc-web -o yaml > "$raw"
 
 # `argocd appset generate -o yaml` emits a single YAML sequence of Applications.
 count="$(yq 'length' "$raw")"
