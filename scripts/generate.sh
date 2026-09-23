@@ -48,7 +48,7 @@ fi
 dupes="$(yq -r '.[].metadata.name' "$raw" | sort | uniq -d)"
 if [[ -n "$dupes" ]]; then
   echo "error: duplicate Application name(s) generated from $APPSET:" >&2
-  echo "$dupes" | sed 's/^/    /' >&2
+  while read -r d; do echo "    $d" >&2; done <<< "$dupes"
   exit 1
 fi
 
