@@ -11,10 +11,10 @@
 # comes from the env label every AppSet template must stamp on its Applications
 # (see the "contract with scripts/render.sh" comment in appsets/).
 #
-# Environment-specific sync policy is applied HERE, to the generated output,
-# rather than templated into the AppSets. The AppSets stay uniform and free of
-# conditionals, and because the rendered manifests go through a PR, the effect
-# of every rule below is visible in the diff.
+# The Applications are written exactly as generated, apart from a provenance
+# header, argocd's namespace and sorted keys. Every environment behaves the
+# same: merging its PR deploys it. What makes prod different is the branch
+# protection on rendered-prod, not anything in here.
 #
 #   Usage: scripts/render.sh <outdir> [appset-file...]   (default: appsets/*.yaml)
 #   Env:   ARGOCD_SERVER, ARGOCD_AUTH_TOKEN   (optional; falls back to argocd login)
@@ -32,36 +32,18 @@ else
 fi
 
 export ENV_LABEL="gitops.34fathombelow.io/env"
-export TRACK_LABEL="gitops.34fathombelow.io/track"
 VALID_ENVS="dev test prod"
 
-# ---- render-time policy ----------------------------------------------------
-# One yq expression over the whole generated list, keyed on the track and env
-# labels. Anything not matched is left exactly as generated.
-#
-#   apps/prod    drop automated sync -- promoting a prod workload is a human act
-#   addons/prod  keep automated sync, never prune resources inside the addon
-#
-# Every file also gets a provenance header naming its AppSet (carried in from the
+# Every file gets a provenance header naming its AppSet (carried in from the
 # generate loop as a temporary `.renderSource` key), and is pinned to argocd's
-# namespace. Sorting keys last keeps the diff stable so a no-op render changes
-# nothing.
-# shellcheck disable=SC2016  # $-free yq program; strenv() reads the exports above
+# namespace. Sorting keys keeps the diff stable so a no-op render changes nothing.
+# shellcheck disable=SC2016  # $-free yq program; strenv() reads the export above
 TRANSFORM='
   .[] |= (
       .metadata.namespace = "argocd"
     | . head_comment = "Generated from " + .renderSource + " by scripts/render.sh -- do not edit.\n"
-        + "track: " + (.metadata.labels[strenv(TRACK_LABEL)] // "none")
-        + "  env: " + (.metadata.labels[strenv(ENV_LABEL)] // "none")
+        + "env: " + .metadata.labels[strenv(ENV_LABEL)]
     | del(.renderSource)
-  )
-  | (.[] | select(.metadata.labels[strenv(TRACK_LABEL)] == "apps" and .metadata.labels[strenv(ENV_LABEL)] == "prod")) |= (
-      del(.spec.syncPolicy.automated)
-    | . head_comment = head_comment + "\npolicy: automated sync removed (prod workloads sync by hand)"
-  )
-  | (.[] | select(.metadata.labels[strenv(TRACK_LABEL)] == "addons" and .metadata.labels[strenv(ENV_LABEL)] == "prod")) |= (
-      .spec.syncPolicy.automated.prune = false
-    | . head_comment = head_comment + "\npolicy: pruning disabled (prod addons are never auto-deleted)"
   )
   | .[] | sort_keys(..)
 '

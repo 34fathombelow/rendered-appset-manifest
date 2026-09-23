@@ -27,10 +27,9 @@ spec:
     name: in-cluster
     namespace: argocd
   syncPolicy:
-    # Environment-specific policy is applied per Application at render time by
-    # scripts/render.sh, not here. Pruning here decides whether an Application
-    # that stopped generating is deleted -- and because generated Applications
-    # carry resources-finalizer, deleting one also deletes its workloads.
+    # Pruning here decides whether an Application that stopped generating is
+    # deleted -- and because generated Applications carry resources-finalizer,
+    # deleting one also deletes its workloads.
     automated:
       prune: true
       selfHeal: true

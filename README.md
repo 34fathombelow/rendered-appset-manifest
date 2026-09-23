@@ -38,7 +38,7 @@ flowchart TD
   C --> AS1
   A --> AS1
 
-  RS["CI · render.sh<br/>generate every appsets/*.yaml → env policy → split"]
+  RS["CI · render.sh<br/>generate every appsets/*.yaml → split by env"]
   AS2 --> RS
   AS1 --> RS
 
@@ -152,20 +152,14 @@ so the overlay is `.app.path` / `.overlay.path`.
 Applications are named `<app>-<cluster>`, not `<app>-<env>`, because there are
 two prod clusters.
 
-## Environment policy
+## Environments behave the same
 
-Both templates are uniform (`automated: {prune: true, selfHeal: true}`).
-Environment differences are applied **at render time** by one yq expression at
-the top of `scripts/render.sh`, keyed on each Application's
-`gitops.34fathombelow.io/track` and `.../env` labels:
-
-| rule | effect |
-|---|---|
-| `apps/prod` | automated sync removed, so prod workloads sync by hand |
-| `addons/prod` | `prune: false`, so prod addons are never auto-deleted |
-
-Each affected file carries a `# policy:` header line, and the effect of every
-rule is visible in the environment's PR.
+Every Application is written exactly as generated, with automated sync
+(`prune: true, selfHeal: true`) in every environment: **merging an env's PR
+deploys it**. What makes prod different is the branch protection on
+`rendered-prod` (e.g. more required approvals), not anything in the templates or
+scripts. If prod needs to deploy only at set times, use an ArgoCD sync window on
+the project rather than disabling automated sync.
 
 ## CI
 
@@ -177,10 +171,10 @@ shellcheck, fully offline, so fork PRs never see the ArgoCD token.
 **`render`** runs on pushes to `main` (never on PRs):
 
 1. `scripts/render.sh` runs `argocd appset generate` on **every** file in
-   `appsets/`, applies the env policy, and splits the combined result into
-   `<env>/<name>.yaml`, one directory per env branch. It fails before writing anything if an AppSet generates
-   zero Applications, an Application has a missing or unknown `env` label, or two
-   Applications (from any AppSets) share a name.
+   `appsets/` and splits the combined result into `<env>/<name>.yaml`, one
+   directory per env branch. It fails before writing anything if an AppSet
+   generates zero Applications, an Application has a missing or unknown `env`
+   label, or two Applications (from any AppSets) share a name.
 2. `scripts/publish.sh` opens or updates one PR per environment, from
    `render/<env>` into `rendered-<env>`: at most three PRs per push, however
    many AppSets there are.
@@ -273,12 +267,7 @@ otherwise read the previous commit.
    env (`render/prod`). It lists one new file per app and per addon the cluster
    will get. Review it there.
 
-5. **Merge the env PR.** Dev and test Applications sync on their own. **Prod
-   apps don't**: sync them by hand once you're ready:
-
-   ```bash
-   argocd app sync -l gitops.34fathombelow.io/cluster=prod-ap-south
-   ```
+5. **Merge the env PR.** Its Applications sync on their own.
 
 6. **Verify:**
 
@@ -324,8 +313,7 @@ otherwise read the previous commit.
    belongs in an addon.
 
 4. **Open a PR to `main`, merge it**, then review and merge the `render/<env>`
-   PR for each env you added an overlay for. Prod needs a manual
-   `argocd app sync` after merging, as above.
+   PR for each env you added an overlay for.
 
 ## Adding an ApplicationSet
 
@@ -333,7 +321,6 @@ otherwise read the previous commit.
    is no workflow, branch or app-of-apps change. The template must:
    - stamp `gitops.34fathombelow.io/env: <dev|test|prod>` on every Application
      (`validate.sh` checks the template has it; `render.sh` routes on it),
-   - stamp `gitops.34fathombelow.io/track: <name>` so render policy can target it,
    - produce names that can't collide with other AppSets' (e.g. include the
      cluster name, as `<app>-<cluster>` does).
    Read clusters from `clusters/*/config.yaml` like the existing AppSets, and
@@ -341,9 +328,7 @@ otherwise read the previous commit.
 2. **Pick a project.** Reuse `apps` or `addons` if the permissions fit, or add
    `argocd/projects/<name>.yaml` with its own `appset-generate` role, and add
    that role to the CI token.
-3. **Optional env policy:** add a rule for its track to `TRANSFORM` in
-   `scripts/render.sh`. Without one it renders exactly as generated.
-4. **Merge to `main`** and review its Applications in the env PRs.
+3. **Merge to `main`** and review its Applications in the env PRs.
 
 ## Other changes
 
@@ -363,9 +348,7 @@ Taking an app, addon or cluster out of git removes its Application from the next
 env PR, and **merging that PR deletes the running resources**, in prod too.
 `appset generate` puts `resources-finalizer.argocd.argoproj.io` on every
 Application, so when the app-of-apps prunes one, ArgoCD cascades the delete to
-everything it deployed. The `addons/prod` no-prune rule does not help here: it
-covers resources inside an Application, not deleting the Application itself.
-Read the `deleted` rows in an env PR as "this will be torn down".
+everything it deployed. Read the `deleted` rows in an env PR as "this will be torn down".
 
 ## Layout
 
@@ -379,7 +362,7 @@ argocd/projects/               AppProjects, each with an appset-generate role
 argocd/app-of-apps/<env>.yaml  one per env, adopting rendered-<env>
 bootstrap/root.yaml            apply once; syncs argocd/ from main
 scripts/validate.sh            offline checks
-scripts/render.sh              generate all AppSets, apply env policy, split per Application
+scripts/render.sh              generate all AppSets, split per Application
 scripts/publish.sh             one PR per env against rendered-<env>
 ```
 

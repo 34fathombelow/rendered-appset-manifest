@@ -47,9 +47,8 @@ spec:
       # two prod clusters would otherwise both render "app-a-prod".
       name: '{{ index .app.path.segments 1 }}-{{ .cluster.name }}'
       labels:
-        # env is the contract with scripts/render.sh: it picks the env branch, and
-        # together with track keys the policy table. cluster is metadata.
-        gitops.34fathombelow.io/track: apps
+        # env is the contract with scripts/render.sh: it picks the env branch.
+        # cluster is metadata, for selecting Applications later.
         gitops.34fathombelow.io/env: '{{ .cluster.env }}'
         gitops.34fathombelow.io/cluster: '{{ .cluster.name }}'
         app.kubernetes.io/name: '{{ index .app.path.segments 1 }}'
@@ -67,8 +66,7 @@ spec:
         # Must match the cluster's name as registered in ArgoCD.
         name: '{{ .cluster.name }}'
         namespace: '{{ index .app.path.segments 1 }}'
-      # Uniform across every environment. Environment-specific policy is applied
-      # to the rendered output by scripts/render.sh, not in here.
+      # Uniform across every environment; merging an env's PR is the gate.
       syncPolicy:
         automated:
           prune: true
