@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The AppSet matrix pairs this overlay with every cluster whose env is "test".
+# An app opts out of an environment by not having that overlay directory at all.
+labels:
+  - includeSelectors: false
+    pairs:
+      gitops.34fathombelow.io/env: test
+
+resources:
+  - ../../base
+
+replicas:
+  - name: app-a
+    count: 2

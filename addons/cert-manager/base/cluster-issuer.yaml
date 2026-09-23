@@ -1,0 +1,8 @@
+# Bootstrap issuer. Lives in the same Application as the chart, so ArgoCD's own
+# resource ordering applies the CRDs before this CR.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}

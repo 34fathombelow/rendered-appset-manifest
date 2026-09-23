@@ -1,0 +1,8 @@
+# Consumed by the git *files* generator in appsets/apps.yaml.
+# Every key here becomes an ApplicationSet parameter, nested exactly as written.
+cluster:
+  # Must match the cluster's name as registered in ArgoCD: generated
+  # Applications use a name-based destination, not a server URL.
+  name: dev-us-east
+  env: dev
+  region: us-east-1

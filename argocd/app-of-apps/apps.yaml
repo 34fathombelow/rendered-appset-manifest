@@ -1,0 +1,39 @@
+# Adopts every Application on rendered/apps, across all environments.
+# This is the only hand-written link between the rendered branches and the
+# cluster; everything below it is generated.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps
+  namespace: argocd
+  labels:
+    gitops.34fathombelow.io/track: apps
+  # Deliberately no resources-finalizer. One Application now covers prod as well
+  # as nonprod, so a cascading delete here would reach every environment at once.
+spec:
+  project: apps
+  source:
+    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+    targetRevision: rendered/apps
+    path: .
+    directory:
+      # The branch is <env>/<application>.yaml, so this has to recurse. ArgoCD
+      # only reads .yaml/.yml/.json from a directory source, but the branch
+      # README is excluded explicitly so the intent is visible.
+      recurse: true
+      exclude: 'README.md'
+  destination:
+    name: in-cluster
+    namespace: argocd
+  syncPolicy:
+    # Environment-specific policy is applied per Application at render time by
+    # scripts/render.sh, not here. Pruning at this level only governs whether an
+    # Application object that stopped generating is deleted; the generated
+    # Applications carry no finalizer, so that never cascades to running workloads.
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+  revisionHistoryLimit: 10

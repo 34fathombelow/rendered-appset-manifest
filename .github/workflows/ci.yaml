@@ -1,0 +1,184 @@
+name: CI
+
+# One workflow so that publishing can depend on validation: `render` needs
+# `validate`, so nothing reaches a generated branch until the offline checks pass.
+#
+# Deliberately no kustomize or helm here. This pipeline renders ArgoCD
+# Applications, not the workloads they point at, so building every overlay meant
+# installing two extra tools and pulling the same Helm charts on every run, which
+# also made publishing depend on upstream chart repos being reachable. The
+# consequence is that a broken overlay is not caught here; it fails at sync.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - "appsets/**"
+      - "clusters/**"
+      - "apps/**"
+      - "addons/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yaml"
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Which track to render"
+        required: true
+        default: all
+        type: choice
+        options: [all, apps, addons]
+
+# Read-only by default; only the render job is granted write, and only to push
+# the generated branches.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /tmp/yq && sudo mv /tmp/yq /usr/local/bin/yq
+          yq --version
+
+      - name: Validate source of truth
+        run: ./scripts/validate.sh
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh
+
+  render:
+    needs: [validate]
+    # Never publish from a pull request: it must not see the ArgoCD token, and a
+    # PR has no business rewriting the generated branches.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      # Never cancel the addon push because the app render failed, and vice versa.
+      fail-fast: false
+      matrix:
+        include:
+          - track: apps
+            appset: appsets/apps.yaml
+            branch: rendered/apps
+          - track: addons
+            appset: appsets/addons.yaml
+            branch: rendered/addons
+    steps:
+      - name: Skip unselected track
+        id: gate
+        run: |
+          want='${{ github.event.inputs.track || 'all' }}'
+          if [[ "$want" == "all" || "$want" == "${{ matrix.track }}" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::skipping ${{ matrix.track }} (track=$want)"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Install argocd CLI and yq
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          curl -sSL -o /tmp/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /tmp/argocd /tmp/yq
+          sudo mv /tmp/argocd /usr/local/bin/argocd
+          sudo mv /tmp/yq /usr/local/bin/yq
+          argocd version --client --short
+          yq --version
+
+      - name: Render ${{ matrix.track }}
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: ./scripts/render.sh "${{ matrix.appset }}" "$RUNNER_TEMP/rendered"
+
+      - name: Publish to ${{ matrix.branch }}
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BRANCH: ${{ matrix.branch }}
+          TRACK: ${{ matrix.track }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # A worktree keeps the rendered branch entirely out of the main checkout,
+          # so nothing from main can leak onto an orphan branch by accident.
+          wt="$RUNNER_TEMP/wt"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH":"$BRANCH"
+            git worktree add "$wt" "$BRANCH"
+          else
+            git worktree add --detach "$wt"
+            git -C "$wt" checkout --orphan "$BRANCH"
+            git -C "$wt" rm -rqf . || true
+          fi
+
+          # Replace the whole tree: rendering is authoritative, so an Application
+          # that no longer generates must vanish from the branch.
+          find "$wt" -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
+          cp -R "$RUNNER_TEMP/rendered/." "$wt/"
+
+          cat > "$wt/README.md" <<MD
+          # rendered/$TRACK -- generated branch
+
+          Do not edit or open pull requests against this branch. Every file here is
+          produced by \`scripts/render.sh\` from \`appsets/$TRACK.yaml\` on \`main\`
+          and overwritten wholesale on each run.
+
+          Layout: \`<env>/<application-name>.yaml\`, one ArgoCD Application per file.
+
+          Rendered from main@${GITHUB_SHA}
+          MD
+
+          git -C "$wt" add -A
+          if git -C "$wt" diff --cached --quiet; then
+            echo "::notice::$BRANCH already up to date, nothing to commit"
+          else
+            git -C "$wt" commit -m "render($TRACK): from main@${GITHUB_SHA::8}"
+            git -C "$wt" push origin "$BRANCH"
+            echo "::notice::pushed $(git -C "$wt" rev-parse --short HEAD) to $BRANCH"
+          fi
+          git worktree remove --force "$wt"
+
+      - name: Summary
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          {
+            echo "### ${{ matrix.track }} -> \`${{ matrix.branch }}\`"
+            echo
+            echo "| env | applications |"
+            echo "|-----|--------------|"
+            for d in "$RUNNER_TEMP"/rendered/*/; do
+              [ -d "$d" ] || continue
+              echo "| $(basename "$d") | $(find "$d" -name '*.yaml' | wc -l | tr -d ' ') |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,6 @@
+# Read by the git *files* generator in appsets/addons.yaml. The directory name
+# supplies the env; this file supplies the target namespace, which a directory
+# listing cannot.
+addon:
+  name: kube-prometheus-stack
+  namespace: monitoring

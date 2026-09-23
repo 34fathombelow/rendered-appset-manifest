@@ -1,0 +1,30 @@
+# Apply this once, by hand, to bootstrap everything else:
+#
+#   kubectl apply -f bootstrap/root.yaml
+#
+# It syncs argocd/ from main, which installs the two AppProjects and the six
+# app-of-apps. Each of those then adopts one <env> directory from a rendered
+# branch. Nothing else is ever applied manually.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+    targetRevision: main
+    path: argocd
+    directory:
+      recurse: true
+  destination:
+    name: in-cluster
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

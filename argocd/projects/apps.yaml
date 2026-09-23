@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  description: Workload track -- Applications rendered from appsets/apps.yaml
+  sourceRepos:
+    - https://github.com/34fathombelow/rendered-appset-manifest.git
+  destinations:
+    - name: '*'
+      namespace: '*'
+      server: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  # Workloads have no business creating cluster-scoped objects; that is the
+  # addon track's job.
+  clusterResourceWhitelist: []
+  roles:
+    - name: appset-generate
+      description: Read-only role used by CI to run 'argocd appset generate'
+      policies:
+        - p, proj:apps:appset-generate, applications, get, apps/*, allow
+        - p, proj:apps:appset-generate, applicationsets, get, apps/*, allow
+        - p, proj:apps:appset-generate, repositories, get, https://github.com/34fathombelow/rendered-appset-manifest.git, allow

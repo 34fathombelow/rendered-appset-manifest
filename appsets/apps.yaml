@@ -1,0 +1,76 @@
+# Workload track.
+#
+# matrix( git-files(clusters/*/config.yaml)  x  git-directories(apps/*/overlays/<env>) )
+#
+# Generator 1 reads cluster metadata out of git, so onboarding a cluster is a new
+# file under clusters/ -- this AppSet never changes.
+#
+# Generator 2's path is INTERPOLATED from generator 1's output. That is the whole
+# point of the matrix here: each cluster only fans out across the app overlays that
+# actually exist for its environment. An app opts out of an environment by simply
+# not having that overlay directory (see apps/app-b, which has no overlays/prod).
+#
+# NOTE: both generators are git generators, so both emit a `path` parameter and the
+# second one wins. Everything cluster-related is therefore read from the file's
+# *content* (.cluster.*) and `.path` always means the app overlay.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  # Under the rendered-manifests pattern the Applications are owned by the
+  # rendered/apps branch, so this AppSet is only ever fed to
+  # `argocd appset generate` in CI. It is intentionally never applied to a cluster.
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+              revision: main
+              files:
+                - path: clusters/*/config.yaml
+          - git:
+              repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+              revision: main
+              directories:
+                - path: apps/*/overlays/{{ .cluster.env }}
+  template:
+    metadata:
+      # .path.segments for "apps/app-a/overlays/dev" is [apps app-a overlays dev],
+      # so index 1 is the app name. Names key off cluster.name, not cluster.env --
+      # two prod clusters would otherwise both render "app-a-prod".
+      name: '{{ index .path.segments 1 }}-{{ .cluster.name }}'
+      labels:
+        # track and env are the contract with scripts/render.sh: they pick the
+        # branch and the directory, and key the policy table. cluster is metadata.
+        gitops.34fathombelow.io/track: apps
+        gitops.34fathombelow.io/env: '{{ .cluster.env }}'
+        gitops.34fathombelow.io/cluster: '{{ .cluster.name }}'
+        app.kubernetes.io/name: '{{ index .path.segments 1 }}'
+        app.kubernetes.io/part-of: apps
+      annotations:
+        gitops.34fathombelow.io/source-path: '{{ .path.path }}'
+        gitops.34fathombelow.io/region: '{{ .cluster.region }}'
+    spec:
+      project: apps
+      source:
+        repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+        targetRevision: main
+        path: '{{ .path.path }}'
+      destination:
+        # Must match the cluster's name as registered in ArgoCD.
+        name: '{{ .cluster.name }}'
+        namespace: '{{ index .path.segments 1 }}'
+      # Uniform across every environment. Environment-specific policy lives in
+      # the hand-written app-of-apps under argocd/app-of-apps/, not in here.
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+      revisionHistoryLimit: 5

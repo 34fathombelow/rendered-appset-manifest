@@ -1,0 +1,4 @@
+# kustomize helm chart cache
+charts/
+Chart.lock
+*.bak
