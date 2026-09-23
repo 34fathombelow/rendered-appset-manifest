@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Render every ApplicationSet into ONE tree of one-Application-per-file
-# manifests, laid out as <outdir>/<env>/<application-name>.yaml. Rendering them
+# manifests, laid out as <outdir>/<env>/<application-name>.yaml (scripts/publish.sh
+# turns each <env>/ into that env's rendered-<env> branch). Rendering them
 # together is what lets one PR per env carry all of them, and what lets the
 # duplicate-name check below catch a clash between two AppSets.
 #

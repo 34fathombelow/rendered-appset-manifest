@@ -1,6 +1,6 @@
-# Adopts every Application on the `rendered` branch: all AppSets, all
-# environments. This is the only hand-written link between the rendered branch
-# and the cluster; everything below it is generated.
+# Adopts every Application on the rendered-prod branch: all AppSets, prod only.
+# One app-of-apps per env branch, so a sync or prune here can never reach
+# another environment.
 #
 # It lives in the `default` project, like bootstrap/root.yaml: all it deploys is
 # Application objects into argocd's namespace. What each generated Application
@@ -9,20 +9,20 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: rendered
+  name: rendered-prod
   namespace: argocd
+  labels:
+    gitops.34fathombelow.io/env: prod
   # Deliberately no resources-finalizer: deleting this Application must never
   # cascade into every generated Application (and, through their finalizers,
-  # every workload) in every environment at once.
+  # every workload) in the environment.
 spec:
   project: default
   source:
     repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
-    targetRevision: rendered
+    targetRevision: rendered-prod
+    # The branch is flat: one <application>.yaml per file at its root.
     path: .
-    directory:
-      # The branch is <env>/<application>.yaml, so this has to recurse.
-      recurse: true
   destination:
     name: in-cluster
     namespace: argocd

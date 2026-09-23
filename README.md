@@ -45,12 +45,24 @@ flowchart TD
   PR["CI · publish.sh<br/>one PR per env"]
   RS --> PR
 
-  R1["rendered branch<br/>dev/ · test/ · prod/"]
-  PR -- "merge render/&lt;env&gt;" --> R1
+  subgraph OUT["one branch per env"]
+    direction LR
+    R1["rendered-dev"]
+    R2["rendered-test"]
+    R3["rendered-prod"]
+  end
+  PR -- "merge render/&lt;env&gt;" --> OUT
 
-  AOA1["app-of-apps<br/>argocd/app-of-apps.yaml"]
+  subgraph LIVE["one app-of-apps per env"]
+    direction LR
+    AOA1["rendered-dev"]
+    AOA2["rendered-test"]
+    AOA3["rendered-prod"]
+  end
   R1 --> AOA1
-  BOOT["bootstrap/root.yaml<br/>applies argocd/"] -.-> AOA1
+  R2 --> AOA2
+  R3 --> AOA3
+  BOOT["bootstrap/root.yaml<br/>applies argocd/"] -.-> LIVE
 
   classDef src    fill:#2f4f7f,stroke:#6f95cf,color:#ffffff,stroke-width:1px
   classDef appset fill:#1d5f51,stroke:#43998a,color:#ffffff,stroke-width:1px
@@ -62,27 +74,33 @@ flowchart TD
   class C,A,D src
   class AS1,AS2 appset
   class RS,PR ci
-  class R1 branch
-  class AOA1 run
+  class R1,R2,R3 branch
+  class AOA1,AOA2,AOA3 run
   class BOOT ext
 ```
 
-Everything lands on one branch, `rendered`, with one directory per environment:
+Each environment has its own branch holding only that env's Applications, from
+every AppSet, one per file at the branch root:
 
 ```
-rendered
-├── dev/    app-a-dev-us-east.yaml  cert-manager-dev-us-east.yaml  ...
-├── test/   ...
-└── prod/   ...
+rendered-dev    app-a-dev-us-east.yaml  cert-manager-dev-us-east.yaml  ...
+rendered-test   app-a-test-us-east.yaml ...
+rendered-prod   app-a-prod-us-east.yaml ...
 ```
 
 | AppSet | Files it produces |
 |---|---|
-| `appsets/apps.yaml` | `<env>/<app>-<cluster>.yaml` (project `apps`) |
-| `appsets/addons.yaml` | `<env>/<addon>-<cluster>.yaml` (project `addons`) |
+| `appsets/apps.yaml` | `<app>-<cluster>.yaml` (project `apps`) |
+| `appsets/addons.yaml` | `<addon>-<cluster>.yaml` (project `addons`) |
 
-Application names must be unique across **all** AppSets, since they share the
-branch and argocd's namespace; `render.sh` fails on a duplicate.
+Separate branches give each env its own history (`git log rendered-prod` is
+prod's deploy log) and **its own branch protection**: protect `rendered-prod`
+with more required approvals than `rendered-dev`. Each branch is adopted by its
+own app-of-apps (`argocd/app-of-apps/<env>.yaml`), so a sync or prune on one env
+can never touch another.
+
+Application names must be unique across **all** AppSets and envs, since they
+all live in argocd's namespace; `render.sh` fails on a duplicate.
 
 ## Clusters
 
@@ -160,15 +178,15 @@ shellcheck, fully offline, so fork PRs never see the ArgoCD token.
 
 1. `scripts/render.sh` runs `argocd appset generate` on **every** file in
    `appsets/`, applies the env policy, and splits the combined result into
-   `<env>/<name>.yaml`. It fails before writing anything if an AppSet generates
+   `<env>/<name>.yaml`, one directory per env branch. It fails before writing anything if an AppSet generates
    zero Applications, an Application has a missing or unknown `env` label, or two
    Applications (from any AppSets) share a name.
 2. `scripts/publish.sh` opens or updates one PR per environment, from
-   `render/<env>` into `rendered`: at most three PRs per push, however many
-   AppSets there are.
+   `render/<env>` into `rendered-<env>`: at most three PRs per push, however
+   many AppSets there are.
 
-Each env PR only touches its own `<env>/` directory, so they never conflict and
-can be merged independently: dev today, prod next week. An app and the addon it
+Each env PR targets its own branch, so they never conflict and can be merged
+independently: dev today, prod next week. An app and the addon it
 needs land in the same PR. Every push to `main` rebuilds the open PRs from the
 latest render; an env with nothing to change has its PR closed. Merging is the
 deploy.
@@ -213,10 +231,13 @@ otherwise read the previous commit.
    secrets `ARGOCD_SERVER` (hostname, no scheme) and `ARGOCD_AUTH_TOKEN`.
 5. **Allow Actions to open PRs:** Settings → Actions → General → *Allow GitHub
    Actions to create and approve pull requests*.
-6. **Push `main`**, or `gh workflow run ci.yaml`. The first run creates an empty
-   `rendered` branch and opens one PR per env adding everything; merge them.
-7. **Bootstrap once:** `kubectl apply -f bootstrap/root.yaml`. `root` syncs
-   `argocd/` from `main`: the AppProjects and the app-of-apps.
+6. **Push `main`**, or `gh workflow run ci.yaml`. The first run creates empty
+   `rendered-dev`, `rendered-test` and `rendered-prod` branches and opens one PR
+   per env adding everything; merge them.
+7. **Protect the env branches** (Settings → Branches): require a PR on each
+   `rendered-*`, with as many approvals as each env warrants.
+8. **Bootstrap once:** `kubectl apply -f bootstrap/root.yaml`. `root` syncs
+   `argocd/` from `main`: the AppProjects and one app-of-apps per env.
 
 ## Onboarding a cluster
 
@@ -331,8 +352,8 @@ otherwise read the previous commit.
   `cluster.addons` on each cluster that should get it.
 - **Addon on one more cluster:** add it to that cluster's `cluster.addons`.
 - **Environment:** add it to `VALID_ENVS` in `render.sh`, `publish.sh` and
-  `validate.sh`. The app-of-apps recurses the whole branch, so nothing under
-  `argocd/` changes.
+  `validate.sh`, and add `argocd/app-of-apps/<env>.yaml` pointing at
+  `rendered-<env>` (copy an existing one). The first render creates the branch.
 
 None of these, nor onboarding a cluster or app, touch an AppSet.
 
@@ -355,11 +376,11 @@ clusters/<name>/config.yaml    cluster inventory, read by the AppSets
 apps/<app>/{base,overlays/<env>}
 addons/<addon>/{base,overlays/<env>}
 argocd/projects/               AppProjects, each with an appset-generate role
-argocd/app-of-apps.yaml        recurses the rendered branch
+argocd/app-of-apps/<env>.yaml  one per env, adopting rendered-<env>
 bootstrap/root.yaml            apply once; syncs argocd/ from main
 scripts/validate.sh            offline checks
 scripts/render.sh              generate all AppSets, apply env policy, split per Application
-scripts/publish.sh             one PR per env against rendered
+scripts/publish.sh             one PR per env against rendered-<env>
 ```
 
 ## Limitations

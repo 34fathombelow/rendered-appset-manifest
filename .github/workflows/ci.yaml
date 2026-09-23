@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
 
 # Read-only by default; only the render job is granted write, to push the
-# render/<env> branches and open the per-env PRs against `rendered`.
+# render/<env> branches and open each env's PR against its rendered-<env> branch.
 permissions:
   contents: read
 
@@ -94,7 +94,7 @@ jobs:
           RENDER_REVISION: ${{ github.sha }}
         run: ./scripts/render.sh "$RUNNER_TEMP/rendered"
 
-      - name: Open per-env PRs against rendered
+      - name: Open one PR per env against rendered-<env>
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -106,7 +106,7 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### PRs against \`rendered\`"
+            echo "### PRs against \`rendered-<env>\`"
             echo
             echo "| env | applications |"
             echo "|-----|--------------|"
