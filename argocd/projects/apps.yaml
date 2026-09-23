@@ -15,8 +15,12 @@ spec:
     - group: '*'
       kind: '*'
   # Workloads have no business creating cluster-scoped objects; that is the
-  # addon track's job.
-  clusterResourceWhitelist: []
+  # addon track's job. The one exception is Namespace: every app template sets
+  # CreateNamespace=true, and ArgoCD checks that against this list, so without
+  # it the sync fails before any workload resource is applied.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
   roles:
     - name: appset-generate
       description: Read-only role used by CI to run 'argocd appset generate'
