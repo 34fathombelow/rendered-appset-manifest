@@ -133,8 +133,7 @@ ok "$count Application name(s) predicted, all unique"
 echo "==> appsets reference this repo consistently"
 repo="$(yq -r '.spec.template.spec.source.repoURL' appsets/apps.yaml)"
 # One file at a time: yq interleaves "---" separators when handed several.
-for f in appsets/apps.yaml appsets/addons.yaml argocd/app-of-apps/*.yaml \
-         argocd/projects/*.yaml bootstrap/root.yaml; do
+for f in appsets/*.yaml argocd/app-of-apps.yaml argocd/projects/*.yaml bootstrap/root.yaml; do
   while IFS= read -r r; do
     [[ -n "$r" && "$r" != "null" ]] || continue
     [[ "$r" == "$repo" ]] || err "$f: repoURL '$r' != '$repo'"
@@ -147,21 +146,29 @@ for f in appsets/apps.yaml appsets/addons.yaml argocd/app-of-apps/*.yaml \
 done
 ok "all repoURLs agree: $repo"
 
-echo "==> app-of-apps match the rendered branches"
-for track in apps addons; do
-  f="argocd/app-of-apps/$track.yaml"
-  [[ -f "$f" ]] || { err "missing $f"; continue; }
-  [[ "$(yq -r '.spec.source.targetRevision' "$f")" == "rendered/$track" ]] \
-    || err "$f: targetRevision is not rendered/$track"
-  [[ "$(yq -r '.spec.project' "$f")" == "$track" ]] || err "$f: project is not $track"
+echo "==> app-of-apps adopts the rendered branch"
+f="argocd/app-of-apps.yaml"
+if [[ ! -f "$f" ]]; then
+  err "missing $f"
+else
+  [[ "$(yq -r '.spec.source.targetRevision' "$f")" == "rendered" ]] \
+    || err "$f: targetRevision is not rendered"
   # The branch is <env>/<application>.yaml, so without recurse the app-of-apps
   # adopts nothing at all and fails silently as an empty Application.
   [[ "$(yq -r '.spec.source.directory.recurse' "$f")" == "true" ]] \
     || err "$f: directory.recurse must be true or no Applications are adopted"
+  # A finalizer here would cascade one delete into every environment at once.
+  [[ "$(yq -r '.metadata.finalizers // [] | length' "$f")" == "0" ]] \
+    || err "$f: must not carry a finalizer"
+fi
+ok "app-of-apps recurses the rendered branch"
+
+echo "==> every AppSet stamps the env label render.sh routes on"
+for f in appsets/*.yaml; do
+  [[ "$(yq -r '.spec.template.metadata.labels["gitops.34fathombelow.io/env"] // ""' "$f")" != "" ]] \
+    || err "$f: template has no gitops.34fathombelow.io/env label"
 done
-extra="$(find argocd/app-of-apps -name '*.yaml' -not -name 'apps.yaml' -not -name 'addons.yaml')"
-[[ -z "$extra" ]] || err "unexpected app-of-apps files: $extra"
-ok "one app-of-apps per track, recursing its branch"
+ok "appsets label their Applications with an env"
 
 echo
 if [[ $fail -ne 0 ]]; then

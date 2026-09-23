@@ -2,9 +2,9 @@
 #
 #   kubectl apply -f bootstrap/root.yaml
 #
-# It syncs argocd/ from main, which installs the two AppProjects and the two
-# app-of-apps. Each of those adopts every Application on its rendered/<track>
-# branch. Nothing else is ever applied manually.
+# It syncs argocd/ from main, which installs the AppProjects and the one
+# app-of-apps (argocd/app-of-apps.yaml). That adopts every Application on the
+# `rendered` branch. Nothing else is ever applied manually.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

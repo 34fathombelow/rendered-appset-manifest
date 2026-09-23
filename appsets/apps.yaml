@@ -24,7 +24,7 @@ spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
   # Under the rendered-manifests pattern the Applications are owned by the
-  # rendered/apps branch, so this AppSet is only ever fed to
+  # `rendered` branch, so this AppSet is only ever fed to
   # `argocd appset generate` in CI. It is intentionally never applied to a cluster.
   generators:
     - matrix:
@@ -47,8 +47,8 @@ spec:
       # two prod clusters would otherwise both render "app-a-prod".
       name: '{{ index .app.path.segments 1 }}-{{ .cluster.name }}'
       labels:
-        # track and env are the contract with scripts/render.sh: they pick the
-        # branch and the directory, and key the policy table. cluster is metadata.
+        # env is the contract with scripts/render.sh: it picks the directory, and
+        # together with track keys the policy table. cluster is metadata.
         gitops.34fathombelow.io/track: apps
         gitops.34fathombelow.io/env: '{{ .cluster.env }}'
         gitops.34fathombelow.io/cluster: '{{ .cluster.name }}'
@@ -67,8 +67,8 @@ spec:
         # Must match the cluster's name as registered in ArgoCD.
         name: '{{ .cluster.name }}'
         namespace: '{{ index .app.path.segments 1 }}'
-      # Uniform across every environment. Environment-specific policy lives in
-      # the hand-written app-of-apps under argocd/app-of-apps/, not in here.
+      # Uniform across every environment. Environment-specific policy is applied
+      # to the rendered output by scripts/render.sh, not in here.
       syncPolicy:
         automated:
           prune: true

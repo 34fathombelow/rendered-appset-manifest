@@ -1,9 +1,13 @@
 # rendered-appset-manifest
 
 ApplicationSets are rendered in CI, and the resulting ArgoCD `Application`s reach
-the cluster through **one pull request per environment**. Nothing generates
-Applications at runtime: the cluster only syncs plain YAML that was reviewed in a
-diff, and merging an environment's PR is what deploys to it.
+the cluster through **one pull request per environment**, whatever AppSet they
+came from. Nothing generates Applications at runtime: the cluster only syncs plain
+YAML that was reviewed in a diff, and merging an environment's PR is what deploys
+to it.
+
+Only the Application objects are rendered. Each one points back at an overlay on
+`main`, and ArgoCD builds the workload itself (kustomize/Helm) at sync time.
 
 ## How it fits together
 
@@ -34,29 +38,19 @@ flowchart TD
   C --> AS1
   A --> AS1
 
-  RS["CI · render.sh<br/>appset generate → env policy → split"]
+  RS["CI · render.sh<br/>generate every appsets/*.yaml → env policy → split"]
   AS2 --> RS
   AS1 --> RS
 
   PR["CI · publish.sh<br/>one PR per env"]
   RS --> PR
 
-  subgraph OUT["rendered branches"]
-    direction LR
-    R1["rendered/apps<br/>dev/ · test/ · prod/"]
-    R2["rendered/addons<br/>dev/ · test/ · prod/"]
-  end
-  PR -- "merge" --> R1
-  PR -- "merge" --> R2
+  R1["rendered branch<br/>dev/ · test/ · prod/"]
+  PR -- "merge render/&lt;env&gt;" --> R1
 
-  subgraph LIVE["app-of-apps"]
-    direction LR
-    AOA1["apps"]
-    AOA2["addons"]
-  end
+  AOA1["app-of-apps<br/>argocd/app-of-apps.yaml"]
   R1 --> AOA1
-  R2 --> AOA2
-  BOOT["bootstrap/root.yaml<br/>applies argocd/"] -.-> LIVE
+  BOOT["bootstrap/root.yaml<br/>applies argocd/"] -.-> AOA1
 
   classDef src    fill:#2f4f7f,stroke:#6f95cf,color:#ffffff,stroke-width:1px
   classDef appset fill:#1d5f51,stroke:#43998a,color:#ffffff,stroke-width:1px
@@ -68,22 +62,31 @@ flowchart TD
   class C,A,D src
   class AS1,AS2 appset
   class RS,PR ci
-  class R1,R2 branch
-  class AOA1,AOA2 run
+  class R1 branch
+  class AOA1 run
   class BOOT ext
 ```
 
-| AppSet | Rendered branch | Files |
-|---|---|---|
-| `appsets/apps.yaml` | `rendered/apps` | `<env>/<app>-<cluster>.yaml` |
-| `appsets/addons.yaml` | `rendered/addons` | `<env>/<addon>-<cluster>.yaml` |
+Everything lands on one branch, `rendered`, with one directory per environment:
 
-Environments are directories inside each rendered branch, not branches of their
-own (git cannot hold both `rendered/apps` and `rendered/apps/dev` as refs).
+```
+rendered
+├── dev/    app-a-dev-us-east.yaml  cert-manager-dev-us-east.yaml  ...
+├── test/   ...
+└── prod/   ...
+```
+
+| AppSet | Files it produces |
+|---|---|
+| `appsets/apps.yaml` | `<env>/<app>-<cluster>.yaml` (project `apps`) |
+| `appsets/addons.yaml` | `<env>/<addon>-<cluster>.yaml` (project `addons`) |
+
+Application names must be unique across **all** AppSets, since they share the
+branch and argocd's namespace; `render.sh` fails on a duplicate.
 
 ## Clusters
 
-`clusters/<name>/config.yaml` is the **only** cluster inventory. Both tracks read it:
+`clusters/<name>/config.yaml` is the **only** cluster inventory. Both AppSets read it:
 
 ```yaml
 cluster:
@@ -100,9 +103,9 @@ never by server URL, so re-registering a cluster behind a new endpoint does not
 touch this repo. Every cluster gets every app that has an overlay for its env,
 but **only the addons it lists**.
 
-## The two ApplicationSets
+## The ApplicationSets
 
-Both are a matrix whose second generator's path is **interpolated from the
+Both current AppSets are a matrix whose second generator's path is **interpolated from the
 cluster's env**, so each cluster only fans out across overlays that exist for its
 environment. An app or addon opts out of an environment by not having that
 overlay directory (`apps/app-b` has no `overlays/prod`).
@@ -135,7 +138,8 @@ two prod clusters.
 
 Both templates are uniform (`automated: {prune: true, selfHeal: true}`).
 Environment differences are applied **at render time** by one yq expression at
-the top of `scripts/render.sh`:
+the top of `scripts/render.sh`, keyed on each Application's
+`gitops.34fathombelow.io/track` and `.../env` labels:
 
 | rule | effect |
 |---|---|
@@ -152,18 +156,22 @@ rule is visible in the environment's PR.
 **`validate`** runs on every PR and push to `main`: `scripts/validate.sh` plus
 shellcheck, fully offline, so fork PRs never see the ArgoCD token.
 
-**`render`** runs on pushes to `main` (never on PRs), once per track:
+**`render`** runs on pushes to `main` (never on PRs):
 
-1. `scripts/render.sh` runs `argocd appset generate`, applies the env policy, and
-   splits the result into `<env>/<name>.yaml`. It fails before writing anything
-   on zero Applications, a missing or unknown `env` label, or a duplicate name.
+1. `scripts/render.sh` runs `argocd appset generate` on **every** file in
+   `appsets/`, applies the env policy, and splits the combined result into
+   `<env>/<name>.yaml`. It fails before writing anything if an AppSet generates
+   zero Applications, an Application has a missing or unknown `env` label, or two
+   Applications (from any AppSets) share a name.
 2. `scripts/publish.sh` opens or updates one PR per environment, from
-   `render/<track>/<env>` into `rendered/<track>`.
+   `render/<env>` into `rendered`: at most three PRs per push, however many
+   AppSets there are.
 
 Each env PR only touches its own `<env>/` directory, so they never conflict and
-can be merged independently: dev today, prod next week. Every push to `main`
-rebuilds the open PRs from the latest render; an env with nothing to change has
-its PR closed. Merging is the deploy.
+can be merged independently: dev today, prod next week. An app and the addon it
+needs land in the same PR. Every push to `main` rebuilds the open PRs from the
+latest render; an env with nothing to change has its PR closed. Merging is the
+deploy.
 
 There is deliberately no kustomize or helm in CI: it renders Applications, not
 the workloads they point at, so a broken overlay is caught at sync, not here.
@@ -174,9 +182,10 @@ With `ARGOCD_SERVER`/`ARGOCD_AUTH_TOKEN` unset, scripts fall back to your
 `argocd login` session.
 
 ```bash
-scripts/validate.sh                                  # offline checks
-scripts/render.sh appsets/apps.yaml /tmp/r           # render one track
-DRY_RUN=1 scripts/publish.sh apps /tmp/r             # per-env diff, pushes nothing
+scripts/validate.sh                          # offline checks
+scripts/render.sh /tmp/r                     # render every AppSet
+scripts/render.sh /tmp/r appsets/apps.yaml   # or just some
+DRY_RUN=1 scripts/publish.sh /tmp/r          # per-env diff, pushes nothing
 kubectl apply --dry-run=server -n argocd -f /tmp/r/dev/
 ```
 
@@ -199,15 +208,15 @@ otherwise read the previous commit.
      -p '{"data":{"kustomize.buildOptions":"--enable-helm"}}'
    kubectl -n argocd rollout restart deploy/argocd-repo-server
    ```
-4. **Create an ArgoCD token** with the `appset-generate` role from
-   `argocd/projects/`, and add repo secrets `ARGOCD_SERVER` (hostname, no scheme)
-   and `ARGOCD_AUTH_TOKEN`.
+4. **Create an ArgoCD token** that holds the `appset-generate` role of **every**
+   project in `argocd/projects/` (one token renders all AppSets), and add repo
+   secrets `ARGOCD_SERVER` (hostname, no scheme) and `ARGOCD_AUTH_TOKEN`.
 5. **Allow Actions to open PRs:** Settings → Actions → General → *Allow GitHub
    Actions to create and approve pull requests*.
-6. **Push `main`**, or `gh workflow run ci.yaml -f track=all`. The first run
-   creates the rendered branches and opens the env PRs; merge them.
+6. **Push `main`**, or `gh workflow run ci.yaml`. The first run creates an empty
+   `rendered` branch and opens one PR per env adding everything; merge them.
 7. **Bootstrap once:** `kubectl apply -f bootstrap/root.yaml`. `root` syncs
-   `argocd/` from `main`: the two AppProjects and the two app-of-apps.
+   `argocd/` from `main`: the AppProjects and the app-of-apps.
 
 ## Onboarding a cluster
 
@@ -239,15 +248,12 @@ otherwise read the previous commit.
    mismatch, an unknown env, a missing `addons` key, and an addon that doesn't
    exist or has no overlay for this env.
 
-4. **Open a PR to `main`, merge it.** CI renders both tracks and updates the PR
-   for that env on each rendered branch (`render/apps/prod`,
-   `render/addons/prod`). They list one new file per app and per addon the
-   cluster will get. Review them there.
+4. **Open a PR to `main`, merge it.** CI renders and updates the PR for that
+   env (`render/prod`). It lists one new file per app and per addon the cluster
+   will get. Review it there.
 
-5. **Merge the env PRs.** If the apps depend on an addon (e.g. cert-manager),
-   merge the addons PR first; nothing orders the two tracks for you.
-   Dev and test Applications sync on their own. **Prod apps don't**: sync them by
-   hand once you're ready:
+5. **Merge the env PR.** Dev and test Applications sync on their own. **Prod
+   apps don't**: sync them by hand once you're ready:
 
    ```bash
    argocd app sync -l gitops.34fathombelow.io/cluster=prod-ap-south
@@ -296,9 +302,27 @@ otherwise read the previous commit.
    kinds other than `Namespace`. Anything cluster-wide (CRDs, ClusterRoles)
    belongs in an addon.
 
-4. **Open a PR to `main`, merge it**, then review and merge the
-   `render/apps/<env>` PR for each env you added an overlay for. Prod needs a
-   manual `argocd app sync` after merging, as above.
+4. **Open a PR to `main`, merge it**, then review and merge the `render/<env>`
+   PR for each env you added an overlay for. Prod needs a manual
+   `argocd app sync` after merging, as above.
+
+## Adding an ApplicationSet
+
+1. **Add `appsets/<name>.yaml`.** CI renders every file in `appsets/`, so there
+   is no workflow, branch or app-of-apps change. The template must:
+   - stamp `gitops.34fathombelow.io/env: <dev|test|prod>` on every Application
+     (`validate.sh` checks the template has it; `render.sh` routes on it),
+   - stamp `gitops.34fathombelow.io/track: <name>` so render policy can target it,
+   - produce names that can't collide with other AppSets' (e.g. include the
+     cluster name, as `<app>-<cluster>` does).
+   Read clusters from `clusters/*/config.yaml` like the existing AppSets, and
+   set `pathParamPrefix` on any second generator that also emits `path`.
+2. **Pick a project.** Reuse `apps` or `addons` if the permissions fit, or add
+   `argocd/projects/<name>.yaml` with its own `appset-generate` role, and add
+   that role to the CI token.
+3. **Optional env policy:** add a rule for its track to `TRANSFORM` in
+   `scripts/render.sh`. Without one it renders exactly as generated.
+4. **Merge to `main`** and review its Applications in the env PRs.
 
 ## Other changes
 
@@ -307,10 +331,10 @@ otherwise read the previous commit.
   `cluster.addons` on each cluster that should get it.
 - **Addon on one more cluster:** add it to that cluster's `cluster.addons`.
 - **Environment:** add it to `VALID_ENVS` in `render.sh`, `publish.sh` and
-  `validate.sh`. The app-of-apps recurse their whole branch, so nothing under
+  `validate.sh`. The app-of-apps recurses the whole branch, so nothing under
   `argocd/` changes.
 
-None of these, nor onboarding, touch an AppSet.
+None of these, nor onboarding a cluster or app, touch an AppSet.
 
 ### Removing things deletes workloads
 
@@ -326,16 +350,16 @@ Read the `deleted` rows in an env PR as "this will be torn down".
 
 ```
 .github/workflows/ci.yaml      validate, then render + per-env PRs
-appsets/{apps,addons}.yaml     the two ApplicationSets (never applied to a cluster)
-clusters/<name>/config.yaml    cluster inventory, read by both AppSets
+appsets/*.yaml                 the ApplicationSets (never applied to a cluster)
+clusters/<name>/config.yaml    cluster inventory, read by the AppSets
 apps/<app>/{base,overlays/<env>}
 addons/<addon>/{base,overlays/<env>}
 argocd/projects/               AppProjects, each with an appset-generate role
-argocd/app-of-apps/            one per track, recursing rendered/<track>
+argocd/app-of-apps.yaml        recurses the rendered branch
 bootstrap/root.yaml            apply once; syncs argocd/ from main
 scripts/validate.sh            offline checks
-scripts/render.sh              generate, apply env policy, split per Application
-scripts/publish.sh             one PR per env against rendered/<track>
+scripts/render.sh              generate all AppSets, apply env policy, split per Application
+scripts/publish.sh             one PR per env against rendered
 ```
 
 ## Limitations
@@ -345,8 +369,9 @@ scripts/publish.sh             one PR per env against rendered/<track>
   `kustomize build --enable-helm` on overlays you change.
 - **Rendering needs a reachable ArgoCD**, so a PR to `main` can't show its
   rendered diff; you see it in the env PRs after merging to `main`.
-- **Tracks aren't atomic.** An app and the addon it depends on land through
-  different PRs with no ordering guarantee.
+- **No ordering inside an env PR.** An app and the addon it needs merge
+  together, but ArgoCD syncs them in parallel; an app needing an addon's CRDs
+  may fail its first sync until the addon is up.
 - **No ApplicationSet controller.** Controller features such as
   `strategy: RollingSync` are unavailable; the per-env PRs are the rollout
   mechanism instead.

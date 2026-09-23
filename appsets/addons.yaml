@@ -49,6 +49,7 @@ spec:
     metadata:
       name: '{{ .addon.name }}-{{ .cluster.name }}'
       labels:
+        # Same contract with scripts/render.sh as appsets/apps.yaml.
         gitops.34fathombelow.io/track: addons
         gitops.34fathombelow.io/env: '{{ .cluster.env }}'
         gitops.34fathombelow.io/cluster: '{{ .cluster.name }}'

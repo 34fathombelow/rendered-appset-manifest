@@ -24,16 +24,9 @@ on:
       - "scripts/**"
       - ".github/workflows/ci.yaml"
   workflow_dispatch:
-    inputs:
-      track:
-        description: "Which track to render"
-        required: true
-        default: all
-        type: choice
-        options: [all, apps, addons]
 
 # Read-only by default; only the render job is granted write, to push the
-# render/<track>/<env> branches and open the per-env PRs against rendered/<track>.
+# render/<env> branches and open the per-env PRs against `rendered`.
 permissions:
   contents: read
 
@@ -72,36 +65,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    strategy:
-      # Never cancel the addon push because the app render failed, and vice versa.
-      fail-fast: false
-      matrix:
-        include:
-          - track: apps
-            appset: appsets/apps.yaml
-            branch: rendered/apps
-          - track: addons
-            appset: appsets/addons.yaml
-            branch: rendered/addons
     steps:
-      - name: Skip unselected track
-        id: gate
-        run: |
-          want='${{ github.event.inputs.track || 'all' }}'
-          if [[ "$want" == "all" || "$want" == "${{ matrix.track }}" ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::skipping ${{ matrix.track }} (track=$want)"
-          fi
-
       - uses: actions/checkout@v4
-        if: steps.gate.outputs.run == 'true'
         with:
           fetch-depth: 0
 
       - name: Install argocd CLI and yq
-        if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           curl -sSL -o /tmp/argocd \
@@ -114,31 +83,30 @@ jobs:
           argocd version --client --short
           yq --version
 
-      - name: Render ${{ matrix.track }}
-        if: steps.gate.outputs.run == 'true'
+      # Every file in appsets/ is rendered into one tree; adding an AppSet needs
+      # no change here.
+      - name: Render all AppSets
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
           ARGOCD_OPTS: --grpc-web
           # Render the pushed commit, not whatever ArgoCD's cache says main is.
           RENDER_REVISION: ${{ github.sha }}
-        run: ./scripts/render.sh "${{ matrix.appset }}" "$RUNNER_TEMP/rendered"
+        run: ./scripts/render.sh "$RUNNER_TEMP/rendered"
 
-      - name: Open per-env PRs against ${{ matrix.branch }}
-        if: steps.gate.outputs.run == 'true'
+      - name: Open per-env PRs against rendered
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          ./scripts/publish.sh "${{ matrix.track }}" "$RUNNER_TEMP/rendered"
+          ./scripts/publish.sh "$RUNNER_TEMP/rendered"
 
       - name: Summary
-        if: steps.gate.outputs.run == 'true'
         run: |
           {
-            echo "### ${{ matrix.track }} -> PRs against \`${{ matrix.branch }}\`"
+            echo "### PRs against \`rendered\`"
             echo
             echo "| env | applications |"
             echo "|-----|--------------|"
