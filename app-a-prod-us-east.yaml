@@ -1,0 +1,33 @@
+# Generated from appsets/apps.yaml by scripts/render.sh -- do not edit.
+# track: apps  env: prod
+# policy: automated sync removed (prod workloads sync by hand)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    gitops.34fathombelow.io/region: us-east-1
+    gitops.34fathombelow.io/source-path: apps/app-a/overlays/prod
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: app-a
+    app.kubernetes.io/part-of: apps
+    gitops.34fathombelow.io/cluster: prod-us-east
+    gitops.34fathombelow.io/env: prod
+    gitops.34fathombelow.io/track: apps
+  name: app-a-prod-us-east
+  namespace: argocd
+spec:
+  destination:
+    name: prod-us-east
+    namespace: app-a
+  project: apps
+  revisionHistoryLimit: 5
+  source:
+    path: apps/app-a/overlays/prod
+    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+    targetRevision: main
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
