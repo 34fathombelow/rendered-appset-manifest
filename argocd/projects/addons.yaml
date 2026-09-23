@@ -25,6 +25,3 @@ spec:
         - p, proj:addons:appset-generate, applications, get, addons/*, allow
         - p, proj:addons:appset-generate, applicationsets, get, addons/*, allow
         - p, proj:addons:appset-generate, repositories, get, https://github.com/34fathombelow/rendered-appset-manifest.git, allow
-        # The cluster generator in appsets/addons.yaml has to enumerate every
-        # registered cluster, so this cannot be narrowed to one project.
-        - p, proj:addons:appset-generate, clusters, get, '*', allow

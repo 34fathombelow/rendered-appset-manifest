@@ -47,6 +47,22 @@ for f in clusters/*/config.yaml; do
   case " $cluster_names " in *" $name "*) err "duplicate cluster.name '$name'";; esac
   cluster_names="$cluster_names $name"
   case " $cluster_envs " in *" $env "*) ;; *) cluster_envs="$cluster_envs $env";; esac
+
+  # The addons AppSet dereferences cluster.addons, so with missingkey=error a
+  # missing key fails the whole render, not just this cluster. An unknown name or
+  # a missing overlay would instead be skipped silently by the files generator.
+  if [[ "$(yq -r '.cluster.addons | tag' "$f")" != "!!seq" ]]; then
+    err "$f: cluster.addons must be a list (use [] for no addons)"
+    continue
+  fi
+  while IFS= read -r a; do
+    [[ -n "$a" ]] || continue
+    if [[ ! -d "addons/$a" ]]; then
+      err "$f: enables addon '$a', but addons/$a does not exist"
+    elif [[ ! -f "addons/$a/overlays/$env/addon.yaml" ]]; then
+      err "$f: enables addon '$a', but it has no overlays/$env/addon.yaml"
+    fi
+  done < <(yq -r '.cluster.addons[]' "$f")
 done
 ok "clusters:$cluster_names"
 ok "envs in use:$cluster_envs"
@@ -104,14 +120,12 @@ for cfg in clusters/*/config.yaml; do
     case " $names " in *" $n "*) err "predicted duplicate Application '$n'";; esac
     names="$names $n"
   done
-  for d in addons/*/overlays/"$cenv"; do
-    [[ -d "$d" ]] || continue
-    addon="$(basename "$(dirname "$(dirname "$d")")")"
-    # Cluster generator normalises the name; assume it matches for this check.
+  while IFS= read -r addon; do
+    [[ -n "$addon" ]] || continue
     n="$addon-$cname"
     case " $names " in *" $n "*) err "predicted duplicate Application '$n'";; esac
     names="$names $n"
-  done
+  done < <(yq -r '.cluster.addons // [] | .[]' "$cfg")
 done
 count=$(echo "$names" | wc -w | tr -d ' ')
 ok "$count Application name(s) predicted, all unique"

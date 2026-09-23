@@ -1,4 +1,4 @@
-# Consumed by the git *files* generator in appsets/apps.yaml.
+# Consumed by the git *files* generator in appsets/apps.yaml and appsets/addons.yaml.
 # Every key here becomes an ApplicationSet parameter, nested exactly as written.
 cluster:
   # Must match the cluster's name as registered in ArgoCD: generated
@@ -6,3 +6,5 @@ cluster:
   name: prod-eu-west
   env: prod
   region: eu-west-1
+  # Addons this cluster gets, by directory name under addons/. Use [] for none.
+  addons: []

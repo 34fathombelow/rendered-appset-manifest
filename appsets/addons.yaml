@@ -1,18 +1,22 @@
 # Platform addon track.
 #
-# matrix( clusters(label selector)  x  git-files(addons/*/overlays/<env>/addon.yaml) )
+# matrix( matrix( git-files(clusters/*/config.yaml) x list(cluster.addons) )
+#         x git-files(addons/<addon>/overlays/<env>/addon.yaml) )
 #
-# Generator 1 is the ArgoCD *cluster* generator: it enumerates clusters already
-# registered with ArgoCD that carry addons=true, rather than reading them from git.
-# Labelling a cluster secret is therefore all it takes to get the addon baseline --
-# no commit required. (This is why the CI token needs `clusters, get`.)
+# Addons are opt-in per cluster: each clusters/<name>/config.yaml lists the addons
+# it gets under cluster.addons. The inner matrix turns that list into one
+# (cluster, addon) pair per enabled addon; a selector cannot do this, because it
+# cannot compare one parameter against a list held in another.
 #
-# Generator 2 is the git *files* generator -- not directories, as in the apps track --
-# because each addon overlay ships an addon.yaml supplying the target namespace,
-# which a bare directory listing cannot provide. Its path is interpolated
-# from the cluster's env label, so an addon opts out of an environment by not having
-# that overlay (see addons/cert-manager, present in every env, vs. how you would
-# stage a new addon dev-only).
+# The outer git *files* generator then reads that addon's overlay for the
+# cluster's env. addon.yaml supplies the target namespace, which a directory
+# listing cannot. An addon with no overlay for an env is skipped for it, and
+# scripts/validate.sh fails if a cluster enables an addon that does not exist.
+#
+# NOTE: the cluster files generator and the overlay files generator both emit a
+# `path` parameter and in a matrix the FIRST one wins, so the overlay generator
+# sets `pathParamPrefix: overlay` and the addon overlay is `.overlay.path`.
+# (Not `addon`: that key already holds addon.yaml's content.)
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -24,47 +28,43 @@ spec:
   generators:
     - matrix:
         generators:
-          - clusters:
-              selector:
-                matchLabels:
-                  addons: "true"
-                matchExpressions:
-                  # Guards against an unlabelled cluster rendering into an env
-                  # directory the splitter does not expect.
-                  - key: env
-                    operator: In
-                    values:
-                      - dev
-                      - test
-                      - prod
+          - matrix:
+              generators:
+                - git:
+                    repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
+                    revision: main
+                    files:
+                      - path: clusters/*/config.yaml
+                # A list generator needs objects, not strings, so this wraps each
+                # name in cluster.addons as {"enabledAddon": "<name>"}.
+                - list:
+                    elementsYaml: '[{{ range $i, $a := .cluster.addons }}{{ if $i }},{{ end }}{"enabledAddon": "{{ $a }}"}{{ end }}]'
           - git:
               repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
               revision: main
+              pathParamPrefix: overlay
               files:
-                - path: addons/*/overlays/{{ .metadata.labels.env }}/addon.yaml
+                - path: addons/{{ .enabledAddon }}/overlays/{{ .cluster.env }}/addon.yaml
   template:
     metadata:
-      # .nameNormalized is the cluster generator's DNS-safe cluster name.
-      name: '{{ .addon.name }}-{{ .nameNormalized }}'
+      name: '{{ .addon.name }}-{{ .cluster.name }}'
       labels:
         gitops.34fathombelow.io/track: addons
-        gitops.34fathombelow.io/env: '{{ .metadata.labels.env }}'
-        gitops.34fathombelow.io/cluster: '{{ .nameNormalized }}'
+        gitops.34fathombelow.io/env: '{{ .cluster.env }}'
+        gitops.34fathombelow.io/cluster: '{{ .cluster.name }}'
         app.kubernetes.io/name: '{{ .addon.name }}'
         app.kubernetes.io/part-of: addons
       annotations:
-        gitops.34fathombelow.io/source-path: '{{ .path.path }}'
+        gitops.34fathombelow.io/source-path: '{{ .overlay.path.path }}'
     spec:
       project: addons
       source:
         repoURL: https://github.com/34fathombelow/rendered-appset-manifest.git
         targetRevision: main
-        path: '{{ .path.path }}'
+        path: '{{ .overlay.path.path }}'
       destination:
-        # .name is the cluster's registered name, which is what a name-based
-        # destination resolves against. .nameNormalized above is the DNS-safe
-        # form, correct for the Application name but not for this.
-        name: '{{ .name }}'
+        # Must match the cluster's name as registered in ArgoCD.
+        name: '{{ .cluster.name }}'
         namespace: '{{ .addon.namespace }}'
       syncPolicy:
         automated:

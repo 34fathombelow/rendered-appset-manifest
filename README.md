@@ -1,8 +1,9 @@
 # rendered-appset-manifest
 
-ApplicationSets are rendered in CI and the resulting ArgoCD `Application`s are
-committed to per-track branches. Nothing generates Applications at runtime: the
-cluster only ever syncs plain, reviewable YAML that a human can read in a diff.
+ApplicationSets are rendered in CI, and the resulting ArgoCD `Application`s reach
+the cluster through **one pull request per environment**. Nothing generates
+Applications at runtime: the cluster only syncs plain YAML that was reviewed in a
+diff, and merging an environment's PR is what deploys to it.
 
 ## How it fits together
 
@@ -21,30 +22,32 @@ flowchart TD
   subgraph SRC["main"]
     direction LR
     D["addons/&lt;addon&gt;/overlays/&lt;env&gt;<br/>+ addon.yaml → namespace"]
+    C["clusters/&lt;name&gt;/config.yaml<br/>name · env · region · addons"]
     A["apps/&lt;app&gt;/overlays/&lt;env&gt;"]
-    C["clusters/&lt;name&gt;/config.yaml<br/>name · env · region"]
   end
 
-  AS2["appsets/addons.yaml<br/><b>matrix</b> clusters × git-files"]
+  AS2["appsets/addons.yaml<br/><b>matrix</b> (git-files × cluster.addons) × git-files"]
   AS1["appsets/apps.yaml<br/><b>matrix</b> git-files × git-dirs"]
-  CL[("ArgoCD registered clusters")]
 
   D --> AS2
-  A --> AS1
+  C --> AS2
   C --> AS1
-  CL -. "addons=true, env" .-> AS2
+  A --> AS1
 
-  RS["CI · scripts/render.sh<br/>appset generate → env policy → split"]
+  RS["CI · render.sh<br/>appset generate → env policy → split"]
   AS2 --> RS
   AS1 --> RS
 
-  subgraph OUT["generated branches"]
+  PR["CI · publish.sh<br/>one PR per env"]
+  RS --> PR
+
+  subgraph OUT["rendered branches"]
     direction LR
     R1["rendered/apps<br/>dev/ · test/ · prod/"]
     R2["rendered/addons<br/>dev/ · test/ · prod/"]
   end
-  RS --> R1
-  RS --> R2
+  PR -- "merge" --> R1
+  PR -- "merge" --> R2
 
   subgraph LIVE["app-of-apps"]
     direction LR
@@ -55,11 +58,6 @@ flowchart TD
   R2 --> AOA2
   BOOT["bootstrap/root.yaml<br/>applies argocd/"] -.-> LIVE
 
-  K[["workloads"]]
-  K2[["platform addons"]]
-  AOA1 --> K
-  AOA2 --> K2
-
   classDef src    fill:#2f4f7f,stroke:#6f95cf,color:#ffffff,stroke-width:1px
   classDef appset fill:#1d5f51,stroke:#43998a,color:#ffffff,stroke-width:1px
   classDef ci     fill:#8a4a1f,stroke:#c8803f,color:#ffffff,stroke-width:1px
@@ -69,399 +67,282 @@ flowchart TD
 
   class C,A,D src
   class AS1,AS2 appset
-  class RS ci
+  class RS,PR ci
   class R1,R2 branch
-  class AOA1,AOA2,K,K2 run
-  class CL,BOOT ext
+  class AOA1,AOA2 run
+  class BOOT ext
 ```
 
-| Path | Branch | What lands there |
+| AppSet | Rendered branch | Files |
 |---|---|---|
 | `appsets/apps.yaml` | `rendered/apps` | `<env>/<app>-<cluster>.yaml` |
 | `appsets/addons.yaml` | `rendered/addons` | `<env>/<addon>-<cluster>.yaml` |
 
-Environments are **directories inside** each rendered branch, not branches of
-their own. Git cannot hold a `rendered/apps` ref and a `rendered/apps/dev` ref at
-the same time, since one would have to be both a file and a directory.
+Environments are directories inside each rendered branch, not branches of their
+own (git cannot hold both `rendered/apps` and `rendered/apps/dev` as refs).
+
+## Clusters
+
+`clusters/<name>/config.yaml` is the **only** cluster inventory. Both tracks read it:
+
+```yaml
+cluster:
+  name: prod-us-east   # must match the directory AND the cluster's name in ArgoCD
+  env: prod            # dev | test | prod
+  region: us-east-1
+  addons:              # opt-in, by directory name under addons/; [] for none
+    - cert-manager
+    - kube-prometheus-stack
+```
+
+Every generated Application targets its cluster by name (`destination.name`),
+never by server URL, so re-registering a cluster behind a new endpoint does not
+touch this repo. Every cluster gets every app that has an overlay for its env,
+but **only the addons it lists**.
 
 ## The two ApplicationSets
 
-### `appsets/apps.yaml`: matrix( git-files × git-directories )
+Both are a matrix whose second generator's path is **interpolated from the
+cluster's env**, so each cluster only fans out across overlays that exist for its
+environment. An app or addon opts out of an environment by not having that
+overlay directory (`apps/app-b` has no `overlays/prod`).
 
 ```
-git-files(clusters/*/config.yaml)  ->  cluster.name, cluster.env, cluster.region
-        x
-git-directories(apps/*/overlays/{{ .cluster.env }})  ->  the app overlay
+apps:    git-files(clusters/*/config.yaml) x git-directories(apps/*/overlays/{{ .cluster.env }})
+addons:  ( git-files(clusters/*/config.yaml) x list(cluster.addons) )
+           x git-files(addons/{{ .enabledAddon }}/overlays/{{ .cluster.env }}/addon.yaml)
 ```
 
-The second generator's path is **interpolated from the first**. That is the whole
-reason this is a matrix rather than two separate AppSets: each cluster fans out
-only across the app overlays that exist for its own environment. An app opts out
-of an environment by simply not having that overlay directory. `apps/app-b` has
-no `overlays/prod`, so it is never paired with a prod cluster.
+The addons AppSet nests a matrix so that `cluster.addons` expands into one
+(cluster, addon) pair per enabled addon; a `selector` cannot compare a parameter
+against a list. It uses the files generator because `addon.yaml` supplies the
+target namespace, which a directory listing cannot.
 
-Cluster metadata lives in git, so onboarding a cluster is a new file under
-`clusters/`; the AppSet itself never changes.
+`validate.sh` fails if a cluster lacks `cluster.addons` (with `missingkey=error`
+that would break the whole render) or enables an addon that doesn't exist or has
+no overlay for the cluster's env (the generator would silently skip it).
 
-Applications are named `<app>-<cluster>`, not `<app>-<env>`. There are two prod
-clusters, and `app-a-prod` would otherwise be generated twice.
+**`pathParamPrefix` is required.** Both generators in each matrix emit a `path`
+parameter, and the *first* one wins, so without a prefix `.path` would be the
+cluster directory and every app on a cluster would collapse onto one name. The
+second generator sets `pathParamPrefix` (`app` for apps, `overlay` for addons),
+so the overlay is `.app.path` / `.overlay.path`.
 
-### `appsets/addons.yaml`: matrix( clusters × git-files )
+Applications are named `<app>-<cluster>`, not `<app>-<env>`, because there are
+two prod clusters.
 
-```
-clusters(matchLabels: addons=true, env in [dev,test,prod])  ->  name, metadata.labels
-        x
-git-files(addons/*/overlays/{{ .metadata.labels.env }}/addon.yaml)  ->  addon.namespace
-```
+## Environment policy
 
-Generator 1 is the ArgoCD **cluster generator**: it enumerates clusters already
-registered with ArgoCD rather than reading them from git. Labelling a cluster
-secret is all it takes to give it the addon baseline, with no commit required.
-
-Generator 2 is the git **files** generator rather than directories, because a
-directory listing cannot tell you an addon's target namespace. `addon.yaml`
-supplies it, which is how `kube-prometheus-stack` lands in `monitoring` and
-`cert-manager` in `cert-manager`.
-
-### Cluster destinations
-
-Every generated Application targets its cluster by name, never by API server
-URL:
-
-```yaml
-destination:
-  name: prod-eu-west      # must match the cluster's name in ArgoCD
-  namespace: app-a
-```
-
-The apps track takes that from `cluster.name` in the cluster config; the addon
-track takes it from the cluster generator's `.name`, which is the registered
-name (`.nameNormalized` is the DNS-safe form, right for the Application's own
-name but not for a destination). The hand-written app-of-apps and
-`bootstrap/root.yaml` target `in-cluster` the same way.
-
-This keeps one identifier per cluster instead of a name and a URL that have to
-agree, and it means re-registering a cluster behind a new endpoint does not
-touch this repository.
-
-### Where environment policy lives
-
-Both AppSet templates are uniform: every generated Application gets
-`automated: {prune: true, selfHeal: true}`. Nothing in the templates branches on
-environment, and neither AppSet uses `templatePatch`.
-
-Environment policy is applied **at render time** instead, by a table near the top
-of `scripts/render.sh` keyed on `<track>/<env>`:
+Both templates are uniform (`automated: {prune: true, selfHeal: true}`).
+Environment differences are applied **at render time** by one yq expression at
+the top of `scripts/render.sh`:
 
 | rule | effect |
 |---|---|
-| `apps/prod` | `del(.spec.syncPolicy.automated)`, so prod workloads sync by hand |
-| `addons/prod` | `.spec.syncPolicy.automated.prune = false`, so prod addons are never auto-deleted |
+| `apps/prod` | automated sync removed, so prod workloads sync by hand |
+| `addons/prod` | `prune: false`, so prod addons are never auto-deleted |
 
-Anything not listed renders exactly as generated. This works precisely because
-the manifests are committed: the effect of every rule shows up in the diff on the
-rendered branch, and each affected file carries a `# policy:` line saying which
-rule touched it. Keeping it here rather than in the AppSets means the AppSets stay
-free of conditionals. The reason to check `render.sh` is that it is the one file
-that decides what differs between environments.
-
-There is one app-of-apps per track, each recursing its whole branch, and both
-are automated. The prod gate lives on the Application itself: `render.sh` strips
-the automated block from every `apps/prod` Application, so a newly rendered prod
-workload appears on its own and then sits `OutOfSync` waiting for a human.
-Gating at the app-of-apps level as well would mean two syncs to ship one change.
-
-Pruning at the app-of-apps level only governs whether an Application object that
-stopped generating is deleted. The generated Applications carry no finalizer, so
-that never cascades into running workloads.
-
-## Rendering
-
-`scripts/render.sh <appset> <outdir>` generates one AppSet server-side, applies
-the environment policy table above, and splits the output into
-`<outdir>/<env>/<name>.yaml`, one Application per file.
-
-Routing comes from two labels every template stamps, and the policy table is
-keyed on the same pair:
-
-```yaml
-gitops.34fathombelow.io/track: apps      # which branch
-gitops.34fathombelow.io/env: dev         # which directory
-```
-
-A third label, `gitops.34fathombelow.io/cluster`, is stamped for selecting and
-grepping Applications later. `render.sh` does not read it.
-
-The script refuses to write anything unless the whole set renders cleanly. It
-builds into a staging directory and swaps it into place, and it fails loudly on:
-
-- zero Applications generated (a cluster generator returns nothing when no cluster
-  carries the labels, and silently publishing that would delete every Application)
-- an Application with no `env` label, or an `env` outside `dev|test|prod`
-- two generator combinations rendering the same Application name
-
-Keys are sorted and `metadata.namespace` is pinned to `argocd`, so a no-op render
-produces no commit.
-
-```bash
-export ARGOCD_SERVER=argocd.example.com
-export ARGOCD_AUTH_TOKEN=...
-./scripts/render.sh appsets/apps.yaml   /tmp/rendered-apps
-./scripts/render.sh appsets/addons.yaml /tmp/rendered-addons
-```
-
-## Previewing a change
-
-`scripts/preview.sh` renders a revision and diffs the result against what is
-currently on the rendered branches, which is the preview CI cannot give you.
-
-```bash
-scripts/preview.sh              # current branch, both tracks
-scripts/preview.sh -r main      # a specific revision
-scripts/preview.sh -t addons    # one track
-```
-
-It reports each Application as added, removed or modified, then shows the
-line-level diff:
-
-```
---- rendered/apps ---
-    ~ dev/app-a-dev-us-east.yaml
-    + dev/app-c-dev-us-east.yaml
-    - test/app-b-test-us-east.yaml
-
-==> 1 added, 1 removed, 1 changed
-```
-
-Two things about this are easy to get wrong, and the script handles both.
-
-The generators in `appsets/` are pinned to `revision: main`. Rendering a feature
-branch without overriding that reads main's `clusters/` and `apps/`, so a newly
-added cluster produces no diff at all. The script rewrites the generator
-revision, and only that: `targetRevision` on the template stays `main`, because
-that is what the Applications will point at once merged.
-
-Generation is server-side, so ArgoCD fetches the revision from the remote and
-cannot see your working tree. The script refuses to run when the revision is not
-on the remote, and warns when your local branch is ahead of it or you have
-uncommitted changes.
-
-Credentials are optional. With `ARGOCD_SERVER` and `ARGOCD_AUTH_TOKEN` unset,
-`render.sh` falls back to the session from `argocd login`.
+Each affected file carries a `# policy:` header line, and the effect of every
+rule is visible in the environment's PR.
 
 ## CI
 
-Everything lives in **`.github/workflows/ci.yaml`** as two jobs.
+`.github/workflows/ci.yaml` has two jobs.
 
-`validate` runs on every pull request and on pushes to `main`. It is entirely
-offline, which matters because rendering needs an ArgoCD token and a fork PR
-must never see one: `scripts/validate.sh` plus shellcheck, no network, no
-cluster.
+**`validate`** runs on every PR and push to `main`: `scripts/validate.sh` plus
+shellcheck, fully offline, so fork PRs never see the ArgoCD token.
 
-`render` has `needs: [validate]`, so nothing is published until that passes. It
-is skipped entirely on pull requests. A job matrix renders both
-tracks in parallel (`fail-fast: false`, so a broken addon render does not block
-the app push) and publishes each to its orphan branch through a `git worktree`,
-replacing the tree wholesale. `workflow_dispatch` takes a `track` input of
-`all`, `apps` or `addons`.
+**`render`** runs on pushes to `main` (never on PRs), once per track:
 
-Only the `render` job is granted `contents: write`, and only to push the
-generated branches; the workflow default is read-only.
+1. `scripts/render.sh` runs `argocd appset generate`, applies the env policy, and
+   splits the result into `<env>/<name>.yaml`. It fails before writing anything
+   on zero Applications, a missing or unknown `env` label, or a duplicate name.
+2. `scripts/publish.sh` opens or updates one PR per environment, from
+   `render/<track>/<env>` into `rendered/<track>`.
 
-There is deliberately no kustomize or helm in CI. This pipeline renders ArgoCD
-Applications, not the workloads they point at, so building every overlay meant
-installing two extra tools and re-pulling the same Helm charts on every run
-(measured at 17 seconds against 0.2 for the chart-free app overlays), and it
-made publishing depend on upstream chart repositories being reachable. The
-trade is that a broken overlay is not caught before it is published.
+Each env PR only touches its own `<env>/` directory, so they never conflict and
+can be merged independently: dev today, prod next week. Every push to `main`
+rebuilds the open PRs from the latest render; an env with nothing to change has
+its PR closed. Merging is the deploy.
 
-The rendered output is pushed directly rather than opened as a PR, unlike
-`kargo-helm-prom-stack`, which raises a PR against its own `main`. The branches
-here are machine-owned; protect them and review `main` instead.
+There is deliberately no kustomize or helm in CI: it renders Applications, not
+the workloads they point at, so a broken overlay is caught at sync, not here.
 
-`scripts/validate.sh` catches what this layout is actually prone to:
+## Local use
 
-- a cluster config missing a field the template dereferences (`missingkey=error`
-  turns that into a render failure)
-- an overlay directory named after an environment that does not exist
-- an `addon.yaml` whose `addon.name` disagrees with its directory
-- two generator combinations that would collide on one Application name
-- an app-of-apps pointing at the wrong branch, or missing `directory.recurse`,
-  which would silently adopt nothing
+With `ARGOCD_SERVER`/`ARGOCD_AUTH_TOKEN` unset, scripts fall back to your
+`argocd login` session.
 
-## Repository layout
-
+```bash
+scripts/validate.sh                                  # offline checks
+scripts/render.sh appsets/apps.yaml /tmp/r           # render one track
+DRY_RUN=1 scripts/publish.sh apps /tmp/r             # per-env diff, pushes nothing
+kubectl apply --dry-run=server -n argocd -f /tmp/r/dev/
 ```
-.github/workflows/
-  ci.yaml                      validate, then render
-appsets/
-  apps.yaml                    matrix: git-files x git-directories
-  addons.yaml                  matrix: clusters x git-files
-clusters/
-  <cluster>/config.yaml        cluster metadata, read by the files generator
-apps/
-  <app>/base/                  shared manifests
-  <app>/overlays/<env>/        per-env kustomization; absence = opt out
-addons/
-  <addon>/base/                shared non-chart resources
-  <addon>/overlays/<env>/      helmCharts + values.yaml + addon.yaml
-argocd/
-  projects/{apps,addons}.yaml  AppProjects, each with an appset-generate role
-  app-of-apps/{apps,addons}.yaml   one per track, recursing its branch
-bootstrap/root.yaml            apply once; syncs argocd/ from main
-scripts/
-  render.sh                    generate, apply env policy, split one file per app
-  preview.sh                   render a revision and diff it against the branches
-  validate.sh                  offline checks, no ArgoCD needed
-  set-repo.sh                  rewrite the repo URL after forking
-```
+
+Generation is server-side: the generators read `clusters/`, `apps/` and
+`addons/` from `main` on the remote, not your working tree. Template edits in
+`appsets/` are picked up locally; changes to those directories need a push.
 
 ## Setup
 
-1. **Rewrite the repo URL**
-
-   ```bash
-   ./scripts/set-repo.sh https://github.com/your-org/your-repo.git
-   ```
-
-2. **Describe your clusters** in `clusters/<name>/config.yaml`. `cluster.name`
-   must match both the directory and the cluster's name as registered in
-   ArgoCD. Generated Applications use a name-based destination, so there is no
-   server URL to keep in step.
-
-3. **Allow kustomize to inflate Helm charts.** Every addon overlay uses
-   kustomize's `helmCharts:` field, which kustomize refuses to process without
-   `--enable-helm`. ArgoCD's repo-server does not pass that flag by default, so
-   without this the addon Applications sync-fail with `must specify --enable-helm`:
-
+1. **Point the repo URL at your fork:**
+   `grep -rl 34fathombelow/rendered-appset-manifest --exclude-dir=.git . | xargs sed -i.bak 's|https://github.com/34fathombelow/rendered-appset-manifest.git|<your-url>|g' && find . -name '*.bak' -delete`
+2. **Describe your clusters**: steps 1–3 of [Onboarding a cluster](#onboarding-a-cluster).
+3. **Let kustomize inflate Helm charts** (the addon overlays use `helmCharts:`):
    ```bash
    kubectl -n argocd patch cm argocd-cm --type merge \
      -p '{"data":{"kustomize.buildOptions":"--enable-helm"}}'
    kubectl -n argocd rollout restart deploy/argocd-repo-server
    ```
+4. **Create an ArgoCD token** with the `appset-generate` role from
+   `argocd/projects/`, and add repo secrets `ARGOCD_SERVER` (hostname, no scheme)
+   and `ARGOCD_AUTH_TOKEN`.
+5. **Allow Actions to open PRs:** Settings → Actions → General → *Allow GitHub
+   Actions to create and approve pull requests*.
+6. **Push `main`**, or `gh workflow run ci.yaml -f track=all`. The first run
+   creates the rendered branches and opens the env PRs; merge them.
+7. **Bootstrap once:** `kubectl apply -f bootstrap/root.yaml`. `root` syncs
+   `argocd/` from `main`: the two AppProjects and the two app-of-apps.
 
-   The apps track does not need this; only the addon overlays inflate charts.
+## Onboarding a cluster
 
-4. **Label the cluster secrets** so the addon track's cluster generator sees them:
-
-   ```bash
-   kubectl -n argocd label secret <cluster-secret> addons=true env=dev
-   ```
-
-   A cluster without `addons=true` gets no addons. A cluster whose `env` is not
-   `dev|test|prod` is rejected by the generator's `matchExpressions` rather than
-   rendering into an unexpected directory.
-
-5. **Create an ArgoCD account and token.** The token needs the
-   `appset-generate` role from `argocd/projects/`. Note that the addon track's
-   cluster generator has to enumerate every registered cluster, so its policy
-   cannot be narrowed to one project:
-
-   ```
-   p, proj:addons:appset-generate, clusters, get, '*', allow
-   ```
-
-   If your ArgoCD instance restricts project roles from reading clusters, use a
-   local account with an equivalent policy in `argocd-rbac-cm` instead.
-
-6. **Add repository secrets**
-
-   | Secret | Value |
-   |---|---|
-   | `ARGOCD_SERVER` | ArgoCD server hostname, no scheme |
-   | `ARGOCD_AUTH_TOKEN` | token for the `appset-generate` account |
-
-7. **Push `main`, then render.** The workflow creates both orphan branches on its
-   first run:
+1. **Register it with ArgoCD** under the name you will use in git:
 
    ```bash
-   gh workflow run ci.yaml -f track=all
+   argocd cluster add <kube-context> --name prod-ap-south
+   argocd cluster list          # NAME column must match exactly
    ```
 
-8. **Bootstrap the cluster once**
+   Nothing in CI can check this. A name that ArgoCD doesn't know renders fine
+   and then fails at sync with an unknown destination.
+
+2. **Add `clusters/<name>/config.yaml`.** The directory name and `cluster.name`
+   must match:
+
+   ```yaml
+   # Consumed by the git *files* generator in appsets/apps.yaml and appsets/addons.yaml.
+   cluster:
+     name: prod-ap-south
+     env: prod                  # dev | test | prod
+     region: ap-south-1
+     addons:                    # [] for none
+       - cert-manager
+       - kube-prometheus-stack
+   ```
+
+3. **Check it offline:** `scripts/validate.sh`. It catches a name/directory
+   mismatch, an unknown env, a missing `addons` key, and an addon that doesn't
+   exist or has no overlay for this env.
+
+4. **Open a PR to `main`, merge it.** CI renders both tracks and updates the PR
+   for that env on each rendered branch (`render/apps/prod`,
+   `render/addons/prod`). They list one new file per app and per addon the
+   cluster will get. Review them there.
+
+5. **Merge the env PRs.** If the apps depend on an addon (e.g. cert-manager),
+   merge the addons PR first; nothing orders the two tracks for you.
+   Dev and test Applications sync on their own. **Prod apps don't**: sync them by
+   hand once you're ready:
 
    ```bash
-   kubectl apply -f bootstrap/root.yaml
+   argocd app sync -l gitops.34fathombelow.io/cluster=prod-ap-south
    ```
 
-   `root` syncs `argocd/` from `main`, which installs the two AppProjects and
-   the two app-of-apps; each of those adopts its whole rendered branch.
+6. **Verify:**
 
-## Adding things
+   ```bash
+   argocd app list -l gitops.34fathombelow.io/cluster=prod-ap-south
+   ```
 
-**A new app.** Add `apps/<app>/base/` plus an overlay per environment it belongs in.
-Omit an overlay to skip that environment. No AppSet change.
+## Onboarding an app
 
-**A new addon.** Add `addons/<addon>/base/` plus `overlays/<env>/` containing
-`kustomization.yaml`, `values.yaml` and `addon.yaml`. Stage it dev-only by
-creating just `overlays/dev/`. No AppSet change.
+1. **Create the base** under `apps/<app>/base/`: the manifests every env shares,
+   plus a `kustomization.yaml`. Copy `apps/app-a/base/` as a starting point.
 
-**A new cluster.** Add a file under `clusters/` for the apps track, and
-`addons=true env=<env>` labels on its ArgoCD secret for the addon track. No AppSet
-change.
+   The directory name is the app's identity: it becomes the Application name
+   (`<app>-<cluster>`) **and the namespace it deploys into**, so it must be a
+   valid DNS label (lowercase, digits, `-`). The namespace is created for you.
 
-**A new environment.** Add it to `VALID_ENVS` in both `scripts/render.sh` and
-`scripts/validate.sh`, to the `matchExpressions` in `appsets/addons.yaml`, and add
-nothing else. The app-of-apps recurse their whole branch, so a new `<env>`
-directory is adopted without any change under `argocd/`. If the environment
-needs its own sync policy, add a case to `policy_for`/`policy_note` in
-`scripts/render.sh`; otherwise it inherits the uniform automated sync from the
-AppSet template.
+2. **Add one overlay per environment it should run in**, at
+   `apps/<app>/overlays/<env>/kustomization.yaml`:
 
-## The generated branches
+   ```yaml
+   apiVersion: kustomize.config.k8s.io/v1beta1
+   kind: Kustomization
+   resources:
+     - ../../base
+   replicas:
+     - name: my-app
+       count: 2
+   ```
 
-`rendered/apps` and `rendered/addons` are machine-owned orphan branches. Every
-file carries a generated-by header, the tree is replaced wholesale on each run,
-and a branch README says the same. Do not edit them or open PRs against them.
-Change `main` and let CI republish.
+   An env with no overlay doesn't get the app, so you can roll out by adding
+   `overlays/dev/` first and `test`/`prod` in later PRs. Every cluster in an env
+   that has an overlay gets the app; there is no per-cluster opt-in for apps.
+
+3. **Check it:**
+
+   ```bash
+   scripts/validate.sh
+   kustomize build apps/<app>/overlays/dev     # CI never builds overlays
+   ```
+
+   Keep to namespaced resources: the `apps` project allows no cluster-scoped
+   kinds other than `Namespace`. Anything cluster-wide (CRDs, ClusterRoles)
+   belongs in an addon.
+
+4. **Open a PR to `main`, merge it**, then review and merge the
+   `render/apps/<env>` PR for each env you added an overlay for. Prod needs a
+   manual `argocd app sync` after merging, as above.
+
+## Other changes
+
+- **Addon:** `addons/<addon>/base/` plus `overlays/<env>/` with
+  `kustomization.yaml`, `values.yaml` and `addon.yaml`, then list it in
+  `cluster.addons` on each cluster that should get it.
+- **Addon on one more cluster:** add it to that cluster's `cluster.addons`.
+- **Environment:** add it to `VALID_ENVS` in `render.sh`, `publish.sh` and
+  `validate.sh`. The app-of-apps recurse their whole branch, so nothing under
+  `argocd/` changes.
+
+None of these, nor onboarding, touch an AppSet.
+
+### Removing things deletes workloads
+
+Taking an app, addon or cluster out of git removes its Application from the next
+env PR, and **merging that PR deletes the running resources**, in prod too.
+`appset generate` puts `resources-finalizer.argocd.argoproj.io` on every
+Application, so when the app-of-apps prunes one, ArgoCD cascades the delete to
+everything it deployed. The `addons/prod` no-prune rule does not help here: it
+covers resources inside an Application, not deleting the Application itself.
+Read the `deleted` rows in an env PR as "this will be torn down".
+
+## Layout
+
+```
+.github/workflows/ci.yaml      validate, then render + per-env PRs
+appsets/{apps,addons}.yaml     the two ApplicationSets (never applied to a cluster)
+clusters/<name>/config.yaml    cluster inventory, read by both AppSets
+apps/<app>/{base,overlays/<env>}
+addons/<addon>/{base,overlays/<env>}
+argocd/projects/               AppProjects, each with an appset-generate role
+argocd/app-of-apps/            one per track, recursing rendered/<track>
+bootstrap/root.yaml            apply once; syncs argocd/ from main
+scripts/validate.sh            offline checks
+scripts/render.sh              generate, apply env policy, split per Application
+scripts/publish.sh             one PR per env against rendered/<track>
+```
 
 ## Limitations
 
-Things this pattern gives up, worth weighing before adopting it.
-
-**Nothing validates the workloads.** CI checks the repository layout and
-renders Applications; it never builds the kustomize overlays those Applications
-point at. A malformed `kustomization.yaml`, a chart version that does not exist,
-or a values file the chart rejects all render into a perfectly valid Application
-and fail at sync time instead. `scripts/preview.sh` will not catch it either,
-since it diffs Applications rather than workloads. Run `kustomize build
---enable-helm` locally on an overlay you have changed.
-
-**Rendering needs a reachable ArgoCD.** `argocd appset generate` runs
-server-side, so there is no offline render and CI cannot produce one without a
-live server and a token. A fork PR must never see that token, so the pull
-request itself can never show the Application diff it will produce.
-`scripts/preview.sh` closes most of this gap for anyone who can reach ArgoCD,
-but it is run by hand rather than enforced, and a contributor without cluster
-access still cannot see what their change renders to.
-
-**The addon track is not reproducible from git alone.** Its cluster generator
-reads whatever clusters happen to be registered and labelled in ArgoCD at render
-time. The same commit can render differently next week because somebody labelled
-a cluster. For that track the repository is no longer the whole input, which is
-the price of not having to commit a file per cluster.
-
-**Nothing reconciles `main` against the rendered branches.** If a render fails,
-or somebody pushes to a rendered branch directly, the cluster keeps running
-whatever is on the branch and no check reports the divergence. The next
-successful render silently corrects it, because the tree is replaced wholesale.
-
-**Changes are not atomic across tracks.** An app and the addon it depends on
-live on different branches, rendered by different jobs and adopted by different
-app-of-apps. There is no way to land both in one step, and no ordering guarantee
-between them.
-
-**Two hops of latency.** A commit to `main` is live only once CI has rendered
-and the relevant app-of-apps has synced. For prod apps there is a third hop,
-since those render without automated sync on purpose.
-
-**You give up the ApplicationSet controller.** The AppSets are never applied to
-a cluster, so anything that lives in the controller is unavailable. Most
-notably `strategy: RollingSync` for progressive rollouts across generated
-Applications, and the controller's own correction of drift on the Applications
-it owns.
-
-**Environment policy lives in bash.** The `policy_for` table in
-`scripts/render.sh` is not declarative configuration and is invisible from the
-AppSets. It is auditable only through its committed output, which is the reason
-each affected file carries a `# policy:` line.
+- **Workloads aren't validated.** A malformed overlay or a missing chart version
+  renders into a valid Application and fails at sync. Run
+  `kustomize build --enable-helm` on overlays you change.
+- **Rendering needs a reachable ArgoCD**, so a PR to `main` can't show its
+  rendered diff; you see it in the env PRs after merging to `main`.
+- **Tracks aren't atomic.** An app and the addon it depends on land through
+  different PRs with no ordering guarantee.
+- **No ApplicationSet controller.** Controller features such as
+  `strategy: RollingSync` are unavailable; the per-env PRs are the rollout
+  mechanism instead.
